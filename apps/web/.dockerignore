@@ -1,0 +1,11 @@
+# Never send secrets, local state or build output into the image build context.
+.env*
+!.env.example
+node_modules
+.next
+out
+*.tsbuildinfo
+next-env.d.ts
+Dockerfile
+.dockerignore
+coverage

@@ -38,6 +38,12 @@ As of 29 Oct 2026:
   - Exceptions tab: unmatched sub-limit triage cards, quote fields needing review, and demographic anomalies with resolve/reopen (`?view=open|resolved|all`). Audit tab: append-only log, newest first.
   - Not built: `/cases/new` (create + upload UI), `/cases/[id]/treatments` (the quote grid shows those sections), the SSE pipeline hub, `/onboarding`, the decryption modal, and PDF bounding-box previews (no layout coordinates are stored).
   - Verified by running a copy of the app with Clerk stubbed out against the real API and DB in Playwright: every tab, PIN → Zone, overrides, recalculation, resolutions and export download. No console errors.
+- **Containerisation and handoff runbook: done.**
+  - **Files:** `apps/web/Dockerfile`, `services/backend/Dockerfile`, `docker-compose.yml` (db, redis, migrate, backend, web), `docker-compose.dev.yml` (Postgres + Redis only), `deploy/postgres/init-app-role.sh`, the root `.env.example`, and `HANDOFF.md`.
+  - **Verified in a sandbox:** the images build and the stack runs healthy in production mode (details in `HANDOFF.md`).
+  - **Bugs fixed on the way:**
+    - `db/index.ts` threw at import without `DATABASE_URL`, which broke `next build` in a clean environment; it's now created lazily.
+    - `extractor.py` imported `httpx`, which openai 3.x no longer depends on (it uses `httpx2`); it only worked locally through Docling. It now uses `httpx2`, which is pinned in `requirements.txt`.
 - **Pre-flight handoff: done.**
   - **Branches:** `main` and `claude/vigilant-allen-l2y8m2` point to the same commit.
   - **Root `.gitignore`:** now also covers `node_modules/`, `.next/` and `*.tsbuildinfo`.
@@ -357,6 +363,16 @@ Env files (gitignored): `apps/web/.env.local` and `services/backend/.env.backend
   - **Evidence viewer:** the drawer fetches the file as a blob with the session's auth headers and shows it in an iframe through an object URL, because an iframe can't send Bearer or dev headers. Extraction evidence now carries `file_id` and `file_extension`; sub-limit evidence has no file link (no column), so it stays excerpt-only.
   - **Onboarding:** dismissal is stored per browser in localStorage (user decision), not in Clerk metadata as App Flow describes. Unreadable storage counts as dismissed, so blocked storage doesn't cause a redirect loop.
 
+- Container decisions (user decisions where noted):
+  - **Compose location (user):** the production compose is at the root as `docker-compose.yml`, not `deploy/docker-compose.prod.yml` (TRD §13). It also runs Postgres in a `db` container instead of the external `DATABASE_URL` the TRD assumes.
+  - **Dev compose (user, opt-in):** `docker-compose.dev.yml` runs only Postgres and Redis. The apps stay bare-metal, so §2's "no Docker locally" still holds for the app code.
+  - **Not included:** the Caddy TLS proxy (TRD §13) and the Celery worker.
+  - **Single API process:** the API runs one uvicorn process (not `--workers 4`) because `/process` keeps progress in memory until Celery lands. Redis is provisioned but unused.
+  - **App role:** the DB connects as a non-superuser app role created by `deploy/postgres/init-app-role.sh`; a superuser would bypass RLS.
+  - **Migrations:** run by the one-off `migrate` service, the web image's `migrator` target. The seed is a manual one-off (`docker compose run --rm migrate bun run seed`).
+  - **Web image:** `output: "standalone"`. `/api/health` is excluded from the Clerk middleware for the container probe. `NEXT_PUBLIC_*` values are build args.
+  - **API image:** torch comes from the CPU index (`TORCH_INDEX_URL`). There's no apt step: Docling's OpenCV is the headless wheel. Storage is mounted at `/data/storage/{inputs,outputs}`, and `/tmp` is tmpfs (zero-persistence invariant).
+  - **Build-time CA:** an optional `corp_ca` BuildKit secret serves TLS-inspecting proxies. Turbopack's font download reads `SSL_CERT_FILE`, not `NODE_EXTRA_CA_CERTS`.
 - Extraction pipeline (Phase 5):
   - **Registry:** `field_registry.py` is the single source of truth: 95 BRD §6–7 fields, 88 of them sent to the LLM as a strict `Literal`. Names are lightly shortened from the BRD (e.g. modern-treatment titles). An extra `Incumbent Insurer` field exists to drive the BRD proposal-type rule.
   - **LLM call:** instructor 1.17 deprecates `TOOLS_STRICT` (it silently becomes `TOOLS`), so strictness comes from `Mode.TOOLS` + `strict=True` per call + `extra="forbid"` models. `store=False` is sent while `OPENAI_ZERO_DATA_RETENTION=true`.

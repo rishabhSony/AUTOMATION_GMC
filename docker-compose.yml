@@ -1,0 +1,134 @@
+# QuotePulse GMC: production stack (EC2 target; TRD §4.2 / §13).
+#
+#   cp .env.example .env            # fill in passwords and keys
+#   docker compose up -d --build    # db → migrate → backend → web
+#   docker compose run --rm migrate bun run seed   # once: sub-limit registry + seed users
+#
+# Local development stays bare-metal (./scripts/dev.sh); see docker-compose.dev.yml for
+# containerised Postgres/Redis only.
+name: quotepulse
+
+x-proxy: &proxy
+  HTTP_PROXY: ${HTTP_PROXY:-}
+  HTTPS_PROXY: ${HTTPS_PROXY:-}
+  NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,db,redis,backend,web}
+
+x-app-database-url: &app_database_url postgresql://quotepulse_app:${APP_DB_PASSWORD:?set APP_DB_PASSWORD}@db:5432/${POSTGRES_DB:-quotepulse}?sslmode=disable
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set POSTGRES_SUPERUSER_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-quotepulse}
+      APP_DB_USER: quotepulse_app
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./deploy/postgres/init-app-role.sh:/docker-entrypoint-initdb.d/10-app-role.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ${POSTGRES_DB:-quotepulse}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Reserved for the Celery worker (process_case_pipeline); the API doesn't use it yet.
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning",
+              "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD}"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+  # One-off job: Drizzle migrations (owned by apps/web) before the apps start.
+  migrate:
+    build:
+      context: ./apps/web
+      target: migrator
+    restart: "no"
+    environment:
+      DATABASE_URL: *app_database_url
+    depends_on:
+      db:
+        condition: service_healthy
+
+  backend:
+    build:
+      context: ./services/backend
+    restart: unless-stopped
+    # One process: /process keeps pipeline progress in memory until Celery lands, so
+    # extra uvicorn workers would answer /pipeline-status without the run.
+    environment:
+      <<: *proxy
+      ENVIRONMENT: production
+      DATABASE_URL: *app_database_url
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/1
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      LOCAL_STORAGE_PATH: /data/storage
+      GMC_S3_BUCKET_NAME: ${GMC_S3_BUCKET_NAME:-}
+      AWS_REGION: ${AWS_REGION:-ap-south-1}
+      CLERK_JWKS_URL: ${CLERK_JWKS_URL:-}
+      CLERK_ISSUER: ${CLERK_ISSUER:-}
+      CLERK_AUTHORIZED_PARTIES: ${WEB_ORIGIN:-http://localhost:3000}
+      CORS_ALLOWED_ORIGINS: ${WEB_ORIGIN:-http://localhost:3000}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL_EXTRACTION: ${OPENAI_MODEL_EXTRACTION:-gpt-5.4-mini}
+      OPENAI_MODEL_VERIFICATION: ${OPENAI_MODEL_VERIFICATION:-gpt-5.4-mini}
+      OPENAI_ZERO_DATA_RETENTION: ${OPENAI_ZERO_DATA_RETENTION:-true}
+      ENABLE_DEV_MOCK_AUTH: "false"
+      USE_MOCK_AI: "false"
+    volumes:
+      # Raw uploads and generated workbooks (storage contract, TRD §5). The host folders
+      # must be writable by the container user: sudo chown -R 10001:10001 storage
+      - ./storage/inputs:/data/storage/inputs
+      - ./storage/outputs:/data/storage/outputs
+    tmpfs:
+      # Scratch space in RAM only (zero-persistence decryption, CLAUDE.md invariant 4).
+      - /tmp:size=512m,mode=1777
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  web:
+    build:
+      context: ./apps/web
+      target: runner
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
+    restart: unless-stopped
+    environment:
+      <<: *proxy
+      NODE_ENV: production
+      DATABASE_URL: *app_database_url
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
+      CLERK_WEBHOOK_SIGNING_SECRET: ${CLERK_WEBHOOK_SIGNING_SECRET:-}
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  db_data:
+  redis_data:

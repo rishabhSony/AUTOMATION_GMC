@@ -1,0 +1,42 @@
+# Optional: PostgreSQL 16 and Redis 7 in containers for developers without Homebrew
+# services. The apps still run bare-metal with ./scripts/dev.sh (CLAUDE.md §2).
+#
+#   docker compose -f docker-compose.dev.yml up -d
+#   ./scripts/dev.sh
+#
+# Credentials match apps/web/.env.example and services/backend/.env.example. Stop a
+# Homebrew Postgres first, or set DEV_PG_PORT and edit DATABASE_URL in both env files.
+name: quotepulse-dev
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: quotepulse_dev
+      APP_DB_USER: quotepulse_app
+      APP_DB_PASSWORD: dev_password_123
+    ports:
+      - "127.0.0.1:${DEV_PG_PORT:-5432}:5432"
+    volumes:
+      - dev_db_data:/var/lib/postgresql/data
+      - ./deploy/postgres/init-app-role.sh:/docker-entrypoint-initdb.d/10-app-role.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d quotepulse_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:${DEV_REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  dev_db_data:
