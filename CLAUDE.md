@@ -10,7 +10,7 @@ You are the senior full-stack AI engineer developing **QuotePulse GMC**, which t
 
 As of 29 Oct 2026:
 - **Phase 1 (local scaffold): done.** `apps/web` (Next.js 15.5, shadcn/ui) and `services/backend` (FastAPI exposing only `GET /api/v1/health`).
-- **Phase 2 (schema): done.** Migrations `0000`–`0002` are applied to local `quotepulse_dev`, and the seed has run (4 users, 19 sub-limit rows).
+- **Phase 2 (schema): done.** Migrations `0000`–`0003` are applied to local `quotepulse_dev`, and the seed has run (4 users, 19 sub-limit rows).
 - **Phase 3 (Clerk auth): code done, not yet exercised with a real Clerk login.**
   - Working: middleware redirects, `/login`, `/invite/accept`, a placeholder `/dashboard`, the Clerk webhook (tested with signed events), and `lib/auth.ts`.
   - Blocked on: the Clerk keys and `CLERK_WEBHOOK_SIGNING_SECRET` in `.env.local`, plus Clerk Dashboard setup (Restricted / invite-only sign-up mode, a webhook endpoint for `user.*` events).
@@ -31,6 +31,13 @@ As of 29 Oct 2026:
 - **Doc 05 §8 read/review/export API: done** (122 pytest tests). Files: `app/api/v1/workbench.py`, `app/api/v1/exports.py`, `app/services/exports.py`, plus `GET /cases` and `GET /cases/{id}` in `cases.py`.
   - Still missing from Doc 05 §8: `/decrypt`, `/process` (Celery), `/pipeline-status` (SSE) and `POST /recalculate-zone` (zone is already re-derived by `/manual-inputs`).
   - 50k-member census: recalculate-age ≈ 2.6 s worst case (every age changes; only changed rows are written), a 1,000-row roster page ≈ 0.15 s.
+- **Plan Phase 7 (workbench UI): built; exercised only against a local harness, not with a real Clerk login.**
+  - Routes: `/dashboard` (metric cards, status filter pills, search, paginated case table) and `/cases/[id]/{quote,sublimits,demography,exceptions,audit}`. `/cases/[id]` redirects to `quote`.
+  - Quote tab: 5-column grid grouped by section, inline manual inputs that re-derive Zone (pulse + toast), the evidence drawer (`?evidence=<field>`), and a justified override dialog.
+  - Demography tab: 7-column grid virtualized with `@tanstack/react-virtual` (36 px rows, 1,000-row pages via `useInfiniteQuery`), the age-basis switcher with Recalc, and `?flagged=true`.
+  - Exceptions tab: unmatched sub-limit triage cards, quote fields needing review, and demographic anomalies with resolve/reopen (`?view=open|resolved|all`). Audit tab: append-only log, newest first.
+  - Not built: `/cases/new` (create + upload UI), `/cases/[id]/treatments` (the quote grid shows those sections), the SSE pipeline hub, `/onboarding`, the decryption modal, and PDF bounding-box previews (no layout coordinates are stored).
+  - Verified by running a copy of the app with Clerk stubbed out against the real API and DB in Playwright: every tab, PIN → Zone, overrides, recalculation, resolutions and export download. No console errors.
 
 Phase 0 is complete: this file is the only agent-context file. Update this section and the Commands section as phases land.
 
@@ -128,6 +135,9 @@ celery -A app.tasks.worker worker --loglevel=INFO   # not wired yet (no app/task
 brew install redis && brew services start redis   # native Redis (not installed yet), no Docker
 ruff check .                                      # lint
 ruff format .                                     # format
+
+# Frontend calls FastAPI directly from the browser: NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+# in apps/web/.env.local, and the API's CORS_ALLOWED_ORIGINS must include the web origin.
 
 # Tests (services/backend; config in pyproject.toml). OpenAI is never called: tests inject
 # tests/llm_fakes.py (canned Pass 1/2 models from tests/fixtures/*.json, RFQ in rfq_apex.md).
@@ -233,6 +243,14 @@ Env files (gitignored): `apps/web/.env.local` and `services/backend/.env.backend
   - Dates are read day-first, falling back to MM/DD only when the day-first reading is impossible.
   - A DOB after the basis date counts as invalid and falls back to the source age.
   - Group Size = stored rows, duplicates included.
+- Frontend (Phase 7):
+  - **Data access:** client components call FastAPI through `lib/api/client.ts` (`useApi()`), which sends the Clerk session token (`useAuth().getToken()`) as the Bearer header. Hooks live in `lib/api/queries.ts` (TanStack Query v5); every mutation invalidates the case's queries (`["case", id, …]`).
+  - **Roles:** `app/(app)/layout.tsx` resolves the `users` row on the server and provides it through `SessionUserProvider`. `useCan()` only hides controls; the API enforces roles.
+  - **URL state:** nuqs for dashboard filters (`status`, `q`, `page`), `evidence`, `flagged` and `view`.
+  - **Components:** shadcn's registry (ui.shadcn.com) isn't reachable from the cloud environment, so `sheet`, `textarea`, `skeleton` and `label` were written by hand on `radix-ui`, following the generated files' style.
+  - **Pills:** provenance pills use the UI brief §1.1 palette (`components/workbench/status-pill.tsx`).
+  - **Fonts:** the Geist font variables sit on `<html>`, because `font-sans` is applied there (on `<body>` they never resolved and text fell back to serif). Sora and JetBrains Mono remain Phase N.
+  - **State / District:** plain text inputs. The brief's searchable dropdowns need master data that `zone_master` doesn't have yet.
 - Routes (user decision): `/` redirects to `/dashboard` (signed in) or `/login`, not App Flow's public landing page. The signed-in home is `/dashboard` (App Flow), not `/workbench`.
   - Signed-in pages live under `app/(app)/`, whose layout re-checks the session. Middleware redirects with `?redirect=`, using prefix matching because Clerk 7 deprecates `createRouteMatcher`.
   - Admin-only pages must call `requireRole("admin")`.
