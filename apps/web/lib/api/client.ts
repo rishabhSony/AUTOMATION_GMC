@@ -4,6 +4,7 @@ import { useAuth } from "@clerk/nextjs";
 import { useCallback } from "react";
 
 import { useSessionUser } from "@/components/providers/session-user";
+import type { ExportResult } from "@/lib/api/types";
 import { DEV_MOCK_AUTH } from "@/lib/dev-mode";
 
 const API_URL =
@@ -112,8 +113,15 @@ export function useApi() {
   );
 
   /** Downloads a file response (exports) using the server-provided filename. */
+  /** Raw file bytes (e.g. the source-document preview). */
+  const blob = useCallback(
+    async (path: string): Promise<Blob> => (await request(path)).blob(),
+    [request],
+  );
+
+  /** Downloads a file response (exports) using the server-provided filename. */
   const download = useCallback(
-    async (path: string): Promise<string> => {
+    async (path: string): Promise<ExportResult> => {
       const res = await request(path);
       const disposition = res.headers.get("Content-Disposition") ?? "";
       const filename =
@@ -122,12 +130,15 @@ export function useApi() {
       const link = document.createElement("a");
       link.href = url;
       link.download = filename;
+      document.body.appendChild(link); // Firefox needs the link in the document
       link.click();
-      URL.revokeObjectURL(url);
-      return filename;
+      link.remove();
+      // Revoking synchronously can cancel the download in some browsers.
+      setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      return { filename, auditLogId: res.headers.get("X-Audit-Log-Id") };
     },
     [request],
   );
 
-  return { json, download };
+  return { json, blob, download };
 }

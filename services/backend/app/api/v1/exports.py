@@ -3,6 +3,8 @@ Export endpoints (Backend Schema v4.0 §8.5): generate the workbook from the rev
 archive it to outputs/analysis/{case_id}/, log a `case_export` audit row, and stream it.
 """
 
+from datetime import datetime
+
 import polars as pl
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
@@ -38,19 +40,28 @@ def _case(conn, case_id: str) -> dict:
     return row
 
 
+def download_name(case_number: str, kind: str) -> str:
+    """QuotePulse_{Case_Reference}_{Type}_{YYYYMMDD}.xlsx (generation date, server time)."""
+    return f"QuotePulse_{case_number}_{kind}_{datetime.now():%Y%m%d}.xlsx"
+
+
 def _archive_and_stream(
-    user: CurrentUser, case: dict, filename: str, data: bytes, details: dict
+    user: CurrentUser, case: dict, filename: str, kind: str, data: bytes, details: dict
 ) -> Response:
     key = get_storage_provider().save_analysis_output(case["id"], filename, data, XLSX)
+    download = download_name(case["case_number"], kind)
     with rls_transaction(user.rls) as conn:
-        _audit(conn, user, case["id"], "case_export", f"exports.{filename}", None,
-               details | {"path": key, "bytes": len(data)})  # fmt: skip
+        details |= {"path": key, "bytes": len(data), "download": download}
+        audit_id = _audit(
+            conn, user, case["id"], "case_export", f"exports.{filename}", None, details
+        )
     return Response(
         data,
         media_type=XLSX,
         headers={
-            "Content-Disposition": f'attachment; filename="{case["case_number"]}_{filename}"',
+            "Content-Disposition": f'attachment; filename="{download}"',
             "X-Archive-Path": key,
+            "X-Audit-Log-Id": audit_id,  # the immutable audit_logs row for this export
         },
     )
 
@@ -79,7 +90,9 @@ def export_demography_excel(
         orient="row",
     ).with_columns(pl.col("dob").str.strptime(pl.Date, "%d-%m-%Y", strict=False))  # fmt: skip
     data = demography.seven_column_excel_bytes(records)
-    return _archive_and_stream(user, case, EXPORT_FILENAME, data, {"members": len(rows)})
+    return _archive_and_stream(
+        user, case, EXPORT_FILENAME, "Demography", data, {"members": len(rows)}
+    )
 
 
 @router.get("/{case_id}/export/quote-excel")
@@ -103,5 +116,10 @@ def export_quote_excel(
         case | {"brokerage_pct": _jsonable(case["brokerage_pct"])}, grid, subs, notes
     )
     return _archive_and_stream(
-        user, case, exports.QUOTE_FILENAME, data, {"fields": len(grid), "notes": len(notes)}
+        user,
+        case,
+        exports.QUOTE_FILENAME,
+        "Quote",
+        data,
+        {"fields": len(grid), "notes": len(notes)},
     )

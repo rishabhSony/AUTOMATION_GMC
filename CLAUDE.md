@@ -38,6 +38,11 @@ As of 29 Oct 2026:
   - Exceptions tab: unmatched sub-limit triage cards, quote fields needing review, and demographic anomalies with resolve/reopen (`?view=open|resolved|all`). Audit tab: append-only log, newest first.
   - Not built: `/cases/new` (create + upload UI), `/cases/[id]/treatments` (the quote grid shows those sections), the SSE pipeline hub, `/onboarding`, the decryption modal, and PDF bounding-box previews (no layout coordinates are stored).
   - Verified by running a copy of the app with Clerk stubbed out against the real API and DB in Playwright: every tab, PIN → Zone, overrides, recalculation, resolutions and export download. No console errors.
+- **Functional polish: done** (134 pytest tests).
+  - **Inline evidence viewer:** `GET /cases/{id}/files/{file_id}/view` streams the source upload inline. The evidence drawer's **View Evidence in Document** opens a split view: PDFs in the browser viewer at `#page=N`, TXT/MD as text with the verbatim excerpt highlighted, and the excerpt only for DOCX/other types or password-protected uploads (423).
+  - **`/onboarding`:** a 4-card product tour. The dashboard sends first-time browsers there (localStorage flag `qp_onboarding_v1_done`); the header has a "Product tour" link.
+  - **Exports:** download names follow `QuotePulse_{CaseNumber}_{Quote|Demography}_{YYYYMMDD}.xlsx`. The `X-Audit-Log-Id` header is shown in the completion toast, and the Audit Trail refreshes.
+  - **Not verified here:** headless Chromium has no PDF viewer, so the PDF render itself needs a real browser. Only the iframe's `blob:…#page=N` URL and the served bytes were checked.
 - **Branch consolidation: done.** `claude/vigilant-allen-l2y8m2` was fast-forwarded into `main`. `scripts/dev.sh` (one-command startup), `scripts/smoke_test.py` (API smoke test) and `scripts/init_local_db.sql` (DB bootstrap) were added; see §5 "Organization Laptop Setup".
 - **Final integration (offline-testable end to end): done** (130 pytest tests).
   - **Mock modes:** env-toggled mock auth (web + API) and mock AI, so the whole app runs with no Clerk or OpenAI keys. See §5 "Running the app".
@@ -237,7 +242,7 @@ curl localhost:8000/api/v1/health    # {"dev_mock_auth": true, "mock_ai": true, 
 ### Local dry-run checklist (mock mode)
 
 1. **Health.** `curl localhost:8000/api/v1/health` shows `dev_mock_auth` and `mock_ai` true, and the API log shows the DEV MOCK AUTH warning.
-2. **Dashboard.** `/` → `/dashboard` with no login; the header shows the Dev role switcher (Admin).
+2. **Onboarding and dashboard.** `/` → `/dashboard` with no login. A first visit in a browser is sent to the 4-card `/onboarding` tour; **Launch Workbench** returns to the dashboard and later visits stay there. The header shows **Product tour** and the Dev role switcher (Admin).
 3. **Intake details.** **New Quote Case** → Company `Apex Logistics Ltd`, Policy Start Date, Incumbent Insurer `ICICI Lombard General Insurance`, Brokerage `7.5`, PIN `400051`. The Zone hint reads *Review Required* (`zone_master` is empty by design).
 4. **Documents.** Drop `samples/rfq_apex.md` and `samples/apex_census_locked.xlsx`; they're tagged RFQ and census. Continue → Review → **Create case & start processing**.
 5. **Password modal.**
@@ -254,7 +259,9 @@ curl localhost:8000/api/v1/health    # {"dev_mock_auth": true, "mock_ai": true, 
    - Approve one with justification as Admin or Underwriter.
    - Resolve the orphan-dependant exception.
 10. **Demography.** Toggle the age mode → Recalc → toast with the changed count. Use **Flagged rows only**; the grid stays strictly 7 columns.
-11. **Exports.** **Quote Sheet** and **Demography (7-col)** download; copies land in `storage/outputs/analysis/{case_id}/`, and each export adds a `case_export` audit row.
+11. **Exports and evidence.**
+    - **Downloads:** **Quote Sheet** and **Demography (7-col)** download as `QuotePulse_{CaseNumber}_{Quote|Demography}_{YYYYMMDD}.xlsx`. The toast cites the `case_export` audit row; archive copies land in `storage/outputs/analysis/{case_id}/`.
+    - **Evidence viewer:** in the evidence drawer, **View Evidence in Document** opens the source: MD/TXT with the excerpt highlighted. For a PDF, create a case with `samples/rfq_orion.pdf` and open Robotic Surgeries on the Modern Treatments tab; the PDF opens at page 2. The locked census can't be previewed.
 12. **Roles.**
     - Ops Analyst: sees every case (migration 0004) and can resolve exceptions and recalculate, but has no quote overrides or sub-limit approval.
     - Sales RM: sees only their own cases; an Admin-created case returns "Case not found".
@@ -307,6 +314,7 @@ Env files (gitignored): `apps/web/.env.local` and `services/backend/.env.backend
   | `POST /cases/{id}/process` | sales_rm, underwriter, admin | Body `{passwords: {file_id: pw}, basis_mode?}`. Decrypts every census/RFQ in RAM during the request (423 lists locked files, 422 `invalid_password`), drops the passwords, then runs demography → extraction → matching in a background task. 202, or 409 while a run is active. |
   | `GET /cases/{id}/pipeline-status` | all | 4 stages (`intake`, `demography`, `extraction`, `matching`) with `pending/running/done/skipped/failed`, `terminal`, `can_start`, `error`. Progress is in API process memory (`in_memory_run`); after a restart only the case status is known. |
   | `GET /reference/zone` | all | `pincode` / `state` / `district` → `{zone, matched_by}` (same lookup as `/manual-inputs`). |
+  | `GET /cases/{id}/files/{file_id}/view` | all | Streams the raw upload for the evidence viewer. PDF → `application/pdf` inline; TXT/MD → `text/plain` inline (never HTML; `nosniff`); other types → attachment. Encrypted uploads → 423 `encrypted_at_rest` (passwords aren't stored). Unknown, foreign or malformed ids → 404. |
   | `POST /cases` (intake) | sales_rm, underwriter, admin | Also accepts `proposal_start_date` (→ age basis), `policy_tenure`, `incumbent_insurer` (→ `proposal_type`), `brokerage_pct`, `rater_type`, `pincode`, `state`, `district`. Tenure and insurer become Manual grid rows ("Entered at case intake"); a `case_intake` audit row is written. |
 - Review API decisions:
   - Field and procedure names contain `/` (e.g. `Maternity Expenses / Benefits`), so those routes use `{name:path}`; clients send `encodeURIComponent(name)`.
@@ -332,7 +340,12 @@ Env files (gitignored): `apps/web/.env.local` and `services/backend/.env.backend
   - **Modern Treatments:** the user asked for "12 IRDAI-mandated treatments with IRDAI codes", but the docs define 20 (BRD §7.1) and no IRDAI codes. The tab shows all 20 with a `BRD 7.1-NN` reference and an IRDAI tag on the 13 BRD items that make up IRDAI's 12-item list (items 6 and 7 are one IRDAI item), plus an "IRDAI standardised list only" filter.
   - **Treatment default:** "Covered up to Base SI" (user-specified) is a display-only default for treatments the RFQ doesn't state. It is never stored.
   - **Intake fields:** the policy period is a start date (sets `proposal_start_date` and the age basis) plus a tenure. Incumbent insurer derives `proposal_type` with the BRD §6.1 rule. Manual grid rows feed the derived fields on later extractions.
-  - **Samples:** `samples/` holds synthetic dry-run inputs; `apex_census_locked.xlsx` uses the password `Apex@2026`.
+  - **Samples:** `samples/` holds synthetic dry-run inputs; `apex_census_locked.xlsx` uses the password `Apex@2026`. `rfq_orion.pdf` is a 2-page PDF RFQ whose modern treatments and sub-limits are cited on page 2, for testing the viewer.
+- Polish decisions:
+  - **Export method:** exports stay `GET` (Doc 05 §8.5). The user's brief said `POST`, which comes from TRD §11.
+  - **Export files:** the archive copy keeps the plan filenames (`gmc_quote_summary_sheet.xlsx`, `standardized_demography_7col.xlsx`); only the download is named `QuotePulse_…`. The date is the API server's local date. `_audit()` now returns the new row's id.
+  - **Evidence viewer:** the drawer fetches the file as a blob with the session's auth headers and shows it in an iframe through an object URL, because an iframe can't send Bearer or dev headers. Extraction evidence now carries `file_id` and `file_extension`; sub-limit evidence has no file link (no column), so it stays excerpt-only.
+  - **Onboarding:** dismissal is stored per browser in localStorage (user decision), not in Clerk metadata as App Flow describes. Unreadable storage counts as dismissed, so blocked storage doesn't cause a redirect loop.
 
 - Extraction pipeline (Phase 5):
   - **Registry:** `field_registry.py` is the single source of truth: 95 BRD §6–7 fields, 88 of them sent to the LLM as a strict `Literal`. Names are lightly shortened from the BRD (e.g. modern-treatment titles). An extra `Incumbent Insurer` field exists to drive the BRD proposal-type rule.

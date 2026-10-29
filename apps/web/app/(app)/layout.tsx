@@ -57,6 +57,9 @@ export default async function AppLayout({
               QuotePulse <span className="text-[#0052CC]">GMC</span>
             </Link>
             <div className="flex items-center gap-3 text-xs text-[#64748B]">
+              <Link href="/onboarding" className="hover:text-[#0F172A]">
+                Product tour
+              </Link>
               <span>
                 {user.fullName} · {ROLE_LABELS[user.role]}
               </span>

@@ -10,6 +10,7 @@ import { cn } from "cn";
 import { FolderOpenIcon, PlusIcon, SearchIcon } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useEffect } from "react";
 import {
   debounce,
   parseAsArrayOf,
@@ -31,6 +32,7 @@ import {
   type CaseStatus,
 } from "@/lib/api/types";
 import { formatDateTime } from "@/lib/format";
+import { isOnboardingDone } from "@/lib/onboarding";
 
 const PAGE_SIZE = 25;
 
@@ -105,6 +107,10 @@ const columns = [
 
 export function CasesDashboard() {
   const router = useRouter();
+  // First visit in this browser: show the product tour once (App Flow /onboarding).
+  useEffect(() => {
+    if (!isOnboardingDone()) router.replace("/onboarding");
+  }, [router]);
   const canCreate = useCan("editQuote");
   const [{ status, q, page }, setFilters] = useQueryStates({
     status: parseAsArrayOf(parseAsStringLiteral(CASE_STATUSES)).withDefault([]),

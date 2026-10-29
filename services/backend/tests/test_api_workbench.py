@@ -5,6 +5,7 @@ sub-limit overrides, exports and the audit trail. Clerk is bypassed via `get_cur
 """
 
 import io
+import re
 import shutil
 from urllib.parse import quote
 
@@ -358,7 +359,11 @@ def test_sublimit_approval(client, case_id):  # noqa: F811
 def test_demography_excel_export(client, processed_case):  # noqa: F811
     res = client.get(f"/api/v1/cases/{processed_case}/export/demography-excel")
     assert res.status_code == 200, res.text
-    assert "standardized_demography_7col.xlsx" in res.headers["content-disposition"]
+    assert re.search(
+        r'filename="QuotePulse_CASE-[0-9A-F-]+_Demography_\d{8}\.xlsx"',
+        res.headers["content-disposition"],
+    )
+    assert res.headers["x-archive-path"].endswith("standardized_demography_7col.xlsx")
     ws = openpyxl.load_workbook(io.BytesIO(res.content)).active
     rows = list(ws.iter_rows(values_only=True))
     assert list(rows[0]) == [

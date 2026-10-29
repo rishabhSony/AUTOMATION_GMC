@@ -1,5 +1,6 @@
 "use client";
 
+import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "cn";
 import { ChevronRightIcon, DownloadIcon } from "lucide-react";
 import Link from "next/link";
@@ -11,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatusPill } from "@/components/workbench/status-pill";
 import { useApi } from "@/lib/api/client";
-import { useCase } from "@/lib/api/queries";
+import { queryKeys, useCase } from "@/lib/api/queries";
 
 const TABS = [
   { slug: "pipeline", label: "Pipeline" },
@@ -105,6 +106,7 @@ function ExportButton({
   label: string;
 }) {
   const api = useApi();
+  const queryClient = useQueryClient();
   const [busy, setBusy] = useState(false);
   return (
     <Button
@@ -114,9 +116,17 @@ function ExportButton({
       onClick={async () => {
         setBusy(true);
         try {
-          const name = await api.download(`/cases/${caseId}/export/${kind}`);
-          toast.success(`Downloaded ${name}`, {
-            description: "A copy is archived in outputs/analysis.",
+          const { filename, auditLogId } = await api.download(
+            `/cases/${caseId}/export/${kind}`,
+          );
+          toast.success(`Downloaded ${filename}`, {
+            description: auditLogId
+              ? `Logged to the immutable audit trail (case_export · ${auditLogId.slice(0, 8)}). A copy is archived in outputs/analysis.`
+              : "A copy is archived in outputs/analysis.",
+          });
+          // The new case_export row should appear in the Audit Trail tab.
+          void queryClient.invalidateQueries({
+            queryKey: queryKeys.audit(caseId),
           });
         } catch (e) {
           toast.error(`Export failed: ${(e as Error).message}`);

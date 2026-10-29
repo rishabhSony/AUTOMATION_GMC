@@ -3,7 +3,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1 import cases, exports, pipeline, reference, workbench
+from app.api.v1 import cases, exports, files, pipeline, reference, workbench
 from app.core.auth import dev_mock_auth_enabled
 from app.core.config import get_settings
 from app.services.extractor import use_mock_ai
@@ -21,7 +21,7 @@ app.add_middleware(
     allow_origins=[o.strip() for o in get_settings().CORS_ALLOWED_ORIGINS.split(",") if o.strip()],
     allow_methods=["GET", "POST", "PATCH"],
     allow_headers=["Authorization", "Content-Type", "X-Dev-User-Id", "X-Dev-User-Role"],
-    expose_headers=["Content-Disposition"],
+    expose_headers=["Content-Disposition", "X-Archive-Path", "X-Audit-Log-Id"],
 )
 
 
@@ -42,3 +42,4 @@ app.include_router(workbench.router, prefix="/api/v1")
 app.include_router(exports.router, prefix="/api/v1")
 app.include_router(pipeline.router, prefix="/api/v1")
 app.include_router(reference.router, prefix="/api/v1")
+app.include_router(files.router, prefix="/api/v1")

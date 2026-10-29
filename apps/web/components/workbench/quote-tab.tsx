@@ -294,6 +294,7 @@ export function QuoteWorkbench({ caseId }: { caseId: string }) {
       </div>
 
       <EvidenceDrawer
+        caseId={caseId}
         row={evidenceField ? byField.get(evidenceField) : undefined}
         onClose={() => setEvidenceField(null)}
       />

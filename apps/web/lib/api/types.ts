@@ -114,6 +114,9 @@ export type QuoteRow = {
   is_manual_override: boolean;
   evidence: {
     file: string | null;
+    /** case_files.id of the cited document (for the inline preview); absent if unknown. */
+    file_id?: string | null;
+    file_extension?: string | null;
     page: string | null;
     excerpt: string | null;
     verification: string | null;
@@ -289,4 +292,10 @@ export type PipelineStatus = {
 export type ZoneLookup = {
   zone: string;
   matched_by: "pincode" | "district" | "none";
+};
+
+export type ExportResult = {
+  filename: string;
+  /** audit_logs.id of the `case_export` row the API wrote for this download. */
+  auditLogId: string | null;
 };

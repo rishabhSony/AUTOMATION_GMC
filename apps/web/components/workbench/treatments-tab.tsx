@@ -211,6 +211,7 @@ export function TreatmentsWorkbench({ caseId }: { caseId: string }) {
       </div>
 
       <EvidenceDrawer
+        caseId={caseId}
         row={evidenceField ? byName.get(evidenceField) : undefined}
         onClose={() => setEvidenceField(null)}
       />

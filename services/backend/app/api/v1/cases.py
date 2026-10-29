@@ -550,12 +550,13 @@ def _registry(conn: psycopg.Connection) -> dict[str, sublimits.RegistryRow]:
 def _audit(
     conn, user: CurrentUser, case_id: str, action: str, target: str, old, new,
     justification: str | None = None,
-) -> None:  # fmt: skip
-    conn.execute(
+) -> str:  # fmt: skip
+    return conn.execute(
         "insert into audit_logs (case_id, user_id, user_email, action, target_entity,"
-        " old_value, new_value, justification_reason) values (%s, %s, %s, %s, %s, %s, %s, %s)",
+        " old_value, new_value, justification_reason) values (%s, %s, %s, %s, %s, %s, %s, %s)"
+        " returning id::text",
         (case_id, user.id, user.email, action, target, Jsonb(old), Jsonb(new), justification),
-    )
+    ).fetchone()["id"]
 
 
 def _parse_rfq_files(files: list[dict], passwords: dict[str, SecretStr]):
@@ -820,6 +821,7 @@ def get_extractions(case_id: str, user: CurrentUser = Depends(require_roles(*ALL
             "select e.id::text, e.section, e.field_name, e.coverage_details, e.proposed_details,"
             " e.source_status::text, e.confidence_rating::text, e.confidence_score,"
             " e.is_manual_override, e.override_reason, f.original_filename as source_file,"
+            " f.id::text as source_file_id, f.file_extension as source_file_extension,"
             " e.source_page_or_sheet, e.verbatim_excerpt, e.reflection_explanation, e.updated_at"
             " from rfq_extractions e left join case_files f on f.id = e.source_file_id"
             " where e.case_id = %s",
@@ -842,6 +844,8 @@ def get_extractions(case_id: str, user: CurrentUser = Depends(require_roles(*ALL
                 "is_manual_override": r["is_manual_override"],
                 "evidence": {
                     "file": r["source_file"],
+                    "file_id": r["source_file_id"],
+                    "file_extension": r["source_file_extension"],
                     "page": r["source_page_or_sheet"],
                     "excerpt": r["verbatim_excerpt"],
                     "verification": r["reflection_explanation"],
