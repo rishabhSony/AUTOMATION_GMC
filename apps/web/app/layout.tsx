@@ -28,12 +28,8 @@ export default function RootLayout({
 }>) {
   return (
     <ClerkProvider appearance={clerkAppearance}>
-      <html lang="en">
-        <body
-          className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-        >
-          {children}
-        </body>
+      <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`}>
+        <body className="antialiased">{children}</body>
       </html>
     </ClerkProvider>
   );
