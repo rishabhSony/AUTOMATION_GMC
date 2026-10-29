@@ -38,6 +38,12 @@ As of 29 Oct 2026:
   - Exceptions tab: unmatched sub-limit triage cards, quote fields needing review, and demographic anomalies with resolve/reopen (`?view=open|resolved|all`). Audit tab: append-only log, newest first.
   - Not built: `/cases/new` (create + upload UI), `/cases/[id]/treatments` (the quote grid shows those sections), the SSE pipeline hub, `/onboarding`, the decryption modal, and PDF bounding-box previews (no layout coordinates are stored).
   - Verified by running a copy of the app with Clerk stubbed out against the real API and DB in Playwright: every tab, PIN → Zone, overrides, recalculation, resolutions and export download. No console errors.
+- **Pre-flight handoff: done.**
+  - **Branches:** `main` and `claude/vigilant-allen-l2y8m2` point to the same commit.
+  - **Root `.gitignore`:** now also covers `node_modules/`, `.next/` and `*.tsbuildinfo`.
+  - **`scripts/verify_handoff.sh`:** added; it checks prerequisites, Postgres and the templates.
+  - **Clean-slate run:** `dev.sh` → `smoke_test.py` passed (423 → decryption → 4 stages done), as did 134 pytest tests and the web typecheck, lint and build.
+  - **Database:** left with 0 cases, 4 seeded users and 19 registry rows.
 - **Functional polish: done** (134 pytest tests).
   - **Inline evidence viewer:** `GET /cases/{id}/files/{file_id}/view` streams the source upload inline. The evidence drawer's **View Evidence in Document** opens a split view: PDFs in the browser viewer at `#page=N`, TXT/MD as text with the verbatim excerpt highlighted, and the excerpt only for DOCX/other types or password-protected uploads (423).
   - **`/onboarding`:** a 4-card product tour. The dashboard sends first-time browsers there (localStorage flag `qp_onboarding_v1_done`); the header has a "Product tour" link.
@@ -184,6 +190,10 @@ Prerequisites (macOS; no Docker):
 - Bun 1.x
 - uv; it provides Python 3.11 for the backend venv.
 
+0. **Check the machine** (read-only; exit 0 = ready). It verifies Bun 1.x, Python (3.11+, or uv to create the backend's 3.11 venv), `psql`, PostgreSQL on :5432, a login to `quotepulse_dev` as `quotepulse_app`, and the env templates and samples. It ends with "Environment ready. Run './scripts/dev.sh' to start QuotePulse."
+   ```bash
+   ./scripts/verify_handoff.sh
+   ```
 1. **Clone and copy the env files.**
    ```bash
    git clone https://github.com/rishabhSony/AUTOMATION_GMC.git && cd AUTOMATION_GMC

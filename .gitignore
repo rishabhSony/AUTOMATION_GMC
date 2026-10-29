@@ -5,6 +5,11 @@
 .env.*
 !.env.example
 
+# JS build artifacts (also in apps/web/.gitignore; repeated so any workspace is covered)
+node_modules/
+.next/
+*.tsbuildinfo
+
 # Python
 .venv/
 __pycache__/
