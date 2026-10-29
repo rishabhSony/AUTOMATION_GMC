@@ -1,0 +1,21 @@
+{
+  "verdicts": [
+    {"field_name": "Sum Insured (SI)", "verdict": "supported", "confidence": "High", "explanation": "Table row states both values."},
+    {"field_name": "Incumbent Insurer", "verdict": "supported", "confidence": "High", "explanation": "Expiring insurer named."},
+    {"field_name": "Claim Servicing", "verdict": "supported", "confidence": "High", "explanation": "TPA servicing stated."},
+    {"field_name": "TPA Name", "verdict": "supported", "confidence": "High", "explanation": "Medi Assist named."},
+    {"field_name": "Company Name", "verdict": "supported", "confidence": "High", "explanation": "Client name stated."},
+    {"field_name": "PIN Code", "verdict": "supported", "confidence": "High", "explanation": "PIN in address."},
+    {"field_name": "State", "verdict": "supported", "confidence": "High", "explanation": "State in address."},
+    {"field_name": "District", "verdict": "ambiguous", "confidence": "Medium", "explanation": "Mumbai city vs suburban district unclear."},
+    {"field_name": "Pre-Existing & Specified Disease (PED)", "verdict": "supported", "confidence": "High", "explanation": "Day 1 cover requested."},
+    {"field_name": "Room Rent (Parent Clause)", "verdict": "supported", "confidence": "High", "explanation": "Clause quoted."},
+    {"field_name": "Maternity Expenses / Benefits", "verdict": "supported", "confidence": "High", "explanation": "Table row."},
+    {"field_name": "Maternity Limit – C-Section Delivery", "verdict": "conflict", "confidence": "Medium", "explanation": "Differs from standard 50,000 norm stated elsewhere."},
+    {"field_name": "Co-Payment Type", "verdict": "supported", "confidence": "Medium", "explanation": "Parents co-pay."},
+    {"field_name": "Policy Co-Payment Factor", "verdict": "supported", "confidence": "High", "explanation": "10% stated."},
+    {"field_name": "Pre-Hospitalization", "verdict": "supported", "confidence": "High", "explanation": "30 days stated."},
+    {"field_name": "Post-Hospitalization", "verdict": "supported", "confidence": "High", "explanation": "60 days stated."},
+    {"field_name": "Client Industry Type", "verdict": "supported", "confidence": "Medium", "explanation": "Industry line."}
+  ]
+}

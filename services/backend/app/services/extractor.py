@@ -41,6 +41,7 @@ from app.services.field_registry import (
     ProcedureName,
     registry_prompt,
 )
+from app.services.mock_llm import MockLLMClient
 
 SCHEMA_VERSION = "rfq-extraction/1"
 CONFIDENCE_SCORES = {"high": "0.950", "medium": "0.750", "low": "0.400"}
@@ -109,8 +110,22 @@ class Pass2Verification(_Strict):
 # ---------------------------------------------------------------------------
 
 
+def use_mock_ai() -> bool:
+    """USE_MOCK_AI, or no key in development. Production without a key fails loudly instead."""
+    settings = get_settings()
+    return settings.USE_MOCK_AI or (
+        not settings.OPENAI_API_KEY and settings.ENVIRONMENT == "development"
+    )
+
+
+def get_llm_client():
+    if use_mock_ai():
+        return MockLLMClient()  # fresh per extraction: it carries Pass 1 into Pass 2
+    return _openai_client()
+
+
 @lru_cache
-def get_llm_client() -> instructor.Instructor:
+def _openai_client() -> instructor.Instructor:
     settings = get_settings()
     if not settings.OPENAI_API_KEY:
         raise LLMNotConfiguredError(
@@ -359,7 +374,7 @@ def extract_rfq(markdown: str, procedures: list[str], client=None) -> Extraction
     return ExtractionOutcome(
         rows=assemble_rows(pass1, pass2, markdown),
         pass1=pass1,
-        model=get_settings().OPENAI_MODEL_EXTRACTION,
+        model=getattr(client, "model_name", get_settings().OPENAI_MODEL_EXTRACTION),
         latency_ms=latency_ms,
         usage={"pass1": usage1, "pass2": usage2, "schema_version": SCHEMA_VERSION},
     )

@@ -29,6 +29,13 @@
       "when": 1793282065759,
       "tag": "0003_exceptions_record_nullable",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1793286513008,
+      "tag": "0004_ops_analyst_rls",
+      "breakpoints": true
     }
   ]
 }

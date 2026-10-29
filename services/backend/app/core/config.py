@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     CLERK_JWKS_URL: str = ""
     CLERK_ISSUER: str = ""
     CLERK_AUTHORIZED_PARTIES: str = "http://localhost:3000"
+    # Development only: trust X-Dev-User-Id / X-Dev-User-Role instead of a Clerk JWT.
+    # Ignored unless ENVIRONMENT=development.
+    ENABLE_DEV_MOCK_AUTH: bool = False
     # Browser origins allowed to call the API (comma-separated)
     CORS_ALLOWED_ORIGINS: str = "http://localhost:3000"
 
@@ -37,6 +40,9 @@ class Settings(BaseSettings):
     OPENAI_ZERO_DATA_RETENTION: bool = True
     OPENAI_TIMEOUT_SECONDS: float = 60
     OPENAI_MAX_RETRIES: int = 3
+    # Offline deterministic extractor (app/services/mock_llm.py); also used in development
+    # whenever OPENAI_API_KEY is empty.
+    USE_MOCK_AI: bool = False
 
     # RFQ parsing: "pymupdf" (default; Docling only for scanned PDFs) or "docling"
     PARSER_PDF_ENGINE: str = "pymupdf"

@@ -84,6 +84,24 @@ class CaseCreate(BaseModel):
     company_name: str = Field(min_length=1, max_length=255)
     proposal_type: str = Field(default="New Business", max_length=50)
     assigned_user_id: str | None = None
+    # Optional intake metadata (/cases/new step 1). Location and commercial inputs are the
+    # same columns PATCH /manual-inputs edits; the policy period sets the age basis.
+    proposal_start_date: date | None = None
+    policy_tenure: str | None = Field(default=None, max_length=50)
+    incumbent_insurer: str | None = Field(default=None, max_length=255)
+    rater_type: str | None = Field(default=None, max_length=100)
+    brokerage_pct: Decimal | None = Field(default=None, ge=0, le=15, decimal_places=2)
+    pincode: str | None = Field(default=None, pattern=r"^[1-9][0-9]{5}$")
+    state: str | None = Field(default=None, max_length=100)
+    district: str | None = Field(default=None, max_length=100)
+
+
+INTAKE_REASON = "Entered at case intake"
+# Intake values kept as manual Quote Review Grid rows (never overwritten by extraction).
+_INTAKE_GRID_FIELDS = {
+    "incumbent_insurer": ("quotation", field_registry.INCUMBENT_INSURER, "coverage_details"),
+    "policy_tenure": ("quotation", "Policy Tenure", "proposed_details"),
+}
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -93,12 +111,43 @@ def create_case(
     # Sales RMs only see cases assigned to them (RLS), so they always own what they create.
     assignee = user.id if user.role == "sales_rm" else (body.assigned_user_id or user.id)
     case_number = f"CASE-{datetime.now():%y%m%d}-{secrets.token_hex(3).upper()}"
+    insurer = (body.incumbent_insurer or "").strip() or None
+    proposal_type = (
+        derivations.derive_proposal_type(insurer)
+        if "incumbent_insurer" in body.model_fields_set
+        else body.proposal_type
+    )
     with rls_transaction(user.rls) as conn:
+        zone, matched_by = derivations.resolve_zone(conn, body.pincode, body.state, body.district)
         row = conn.execute(
-            "insert into cases (case_number, company_name, proposal_type, assigned_user_id)"
-            " values (%s, %s, %s, %s) returning id::text, case_number",
-            (case_number, body.company_name, body.proposal_type, assignee),
-        ).fetchone()
+            "insert into cases (case_number, company_name, proposal_type, assigned_user_id,"
+            " proposal_start_date, age_basis_mode, rater_type, brokerage_pct, pincode, state,"
+            " district, zone)"
+            " values (%s, %s, %s, %s, %s, %s, coalesce(%s, '-'), coalesce(%s, 0), %s, %s, %s, %s)"
+            " returning id::text, case_number",
+            (case_number, body.company_name, proposal_type, assignee, body.proposal_start_date,
+             "policy_proposal_start_date" if body.proposal_start_date else "current_date",
+             body.rater_type, body.brokerage_pct, body.pincode, body.state, body.district,
+             zone if (body.pincode or body.district) else None),
+        ).fetchone()  # fmt: skip
+        values = {"policy_tenure": body.policy_tenure, "incumbent_insurer": insurer}
+        for key, (section, name, column) in _INTAKE_GRID_FIELDS.items():
+            if values[key]:
+                conn.execute(
+                    f"insert into rfq_extractions (case_id, section, field_name, {column},"
+                    " source_status, confidence_rating, confidence_score, is_manual_override,"
+                    " overridden_by_user_id, override_reason)"
+                    " values (%s, %s, %s, %s, 'manual', 'high', 1, true, %s, %s)",
+                    (row["id"], section, name, values[key], user.id, INTAKE_REASON),
+                )
+        intake = body.model_dump(
+            exclude={"company_name", "proposal_type", "assigned_user_id"}, exclude_none=True
+        )
+        if intake:
+            _audit(conn, user, row["id"], "case_intake", "cases",
+                   None, {k: _jsonable(v) for k, v in intake.items()}
+                   | {"zone": zone, "zone_matched_by": matched_by, "proposal_type": proposal_type},
+                   INTAKE_REASON)  # fmt: skip
     return row
 
 
@@ -364,6 +413,37 @@ def _persist(conn: psycopg.Connection, case_id: str, result: demography.Demograp
     )
 
 
+def demography_from_stream(
+    conn: psycopg.Connection, case_id: str, file: dict, stream: io.BytesIO, basis_date: date
+) -> demography.DemographyResult:
+    """Decrypted census stream → stored records, exceptions and group metrics."""
+    try:
+        census = demography.read_census(stream, file["original_filename"])
+        result = demography.process_census(census, basis_date)
+    finally:
+        stream.close()  # plaintext buffer released; never written to disk
+    _persist(conn, case_id, result)
+    if file["is_encrypted"]:
+        conn.execute(
+            "update case_files set is_decrypted_successfully = true where id = %s", (file["id"],)
+        )
+    return result
+
+
+def save_demography_export(case_id: str, result: demography.DemographyResult) -> str:
+    return get_storage_provider().save_analysis_output(
+        case_id,
+        EXPORT_FILENAME,
+        demography.seven_column_excel_bytes(result.records),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+def exception_counts(result: demography.DemographyResult) -> dict[str, int]:
+    counts = result.exceptions.group_by("exception_type").len().sort("exception_type")
+    return dict(counts.iter_rows())
+
+
 @router.post("/{case_id}/demography/process")
 def process_demography(
     case_id: str,
@@ -412,20 +492,11 @@ def process_demography(
             body.password = None
 
         try:
-            census = demography.read_census(stream, file["original_filename"])
-            result = demography.process_census(census, basis_date)
+            result = demography_from_stream(conn, case_id, file, stream, basis_date)
         except demography.CensusFormatError as exc:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
         finally:
-            stream.close()  # plaintext buffer released; never written to disk
             del stream
-
-        _persist(conn, case_id, result)
-        if file["is_encrypted"]:
-            conn.execute(
-                "update case_files set is_decrypted_successfully = true where id = %s",
-                (file["id"],),
-            )
         if body.basis_mode or body.proposal_start_date:
             conn.execute(
                 "update cases set age_basis_mode = %s,"
@@ -433,13 +504,7 @@ def process_demography(
                 (mode.value, body.proposal_start_date, case_id),
             )
 
-    export_key = storage.save_analysis_output(
-        case_id,
-        EXPORT_FILENAME,
-        demography.seven_column_excel_bytes(result.records),
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-    counts = result.exceptions.group_by("exception_type").len().sort("exception_type")
+    export_key = save_demography_export(case_id, result)
     return {
         "file_id": file["id"],
         "basis_mode": mode.value,
@@ -447,7 +512,7 @@ def process_demography(
         "group_size": result.metrics.group_size,
         "primary_members_count": result.metrics.primary_members_count,
         "sme_flag": result.metrics.sme_flag,
-        "exception_counts": dict(counts.iter_rows()),
+        "exception_counts": exception_counts(result),
         "header_mapping": result.header_mapping,
         "unmapped_columns": result.unmapped_columns,
         "export_path": export_key,
@@ -594,11 +659,29 @@ def extract_rfq(
     # 2. Parse in RAM, then two-pass extraction over the combined Markdown.
     documents = _parse_rfq_files(files, body.passwords)
     body.passwords = {}
-    markdown = parser.combine(documents)
     try:
-        outcome = extractor.extract_rfq(markdown, list(registry), client=_llm_client())
+        return run_extraction(user, case_id, files, documents, registry)
     except extractor.LLMNotConfiguredError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+
+
+def run_extraction(
+    user: CurrentUser,
+    case_id: str,
+    files: list[dict],
+    documents: list,
+    registry: dict[str, sublimits.RegistryRow],
+    on_extracted=None,
+) -> dict:
+    """
+    Pass 1 → Pass 2 over the parsed documents, then the deterministic sub-limit matcher,
+    derived fields and persistence. `on_extracted` fires between the LLM passes and the
+    matching/persistence step (pipeline progress).
+    """
+    markdown = parser.combine(documents)
+    outcome = extractor.extract_rfq(markdown, list(registry), client=_llm_client())
+    if on_extracted:
+        on_extracted(outcome)
 
     matches: dict[str, tuple[sublimits.SublimitMatch, object]] = {}
     for s in outcome.pass1.sublimits:
@@ -613,7 +696,22 @@ def extract_rfq(
     with rls_transaction(user.rls) as conn:
         case = _lock_case(conn, case_id)
         _prefill_location(conn, case, outcome.rows)
-        rows = outcome.rows + extractor.derived_rows(case, outcome.rows)
+        # Manual values (e.g. Incumbent Insurer entered at intake) drive the derived fields.
+        manual = {
+            r["field_name"]: r
+            for r in conn.execute(
+                "select field_name, coverage_details, proposed_details from rfq_extractions"
+                " where case_id = %s and is_manual_override",
+                (case_id,),
+            ).fetchall()
+        }
+        base = [
+            extractor.GridRow(r.section, r.field_name, m["coverage_details"],
+                              m["proposed_details"], "manual", "high")
+            if (m := manual.get(r.field_name)) else r
+            for r in outcome.rows
+        ]  # fmt: skip
+        rows = base + extractor.derived_rows(case, base)
         with conn.cursor() as cur:
             cur.executemany(
                 _EXTRACTION_UPSERT,
@@ -881,4 +979,6 @@ def patch_manual_inputs(
 
 
 def _jsonable(value):
+    if isinstance(value, date):
+        return value.isoformat()
     return str(value) if isinstance(value, Decimal) else value

@@ -202,8 +202,9 @@ def test_resolve_exception_and_keep_resolution_across_recalc(client, processed_c
     assert client.patch(missing, json={"resolution_action": "Verified"}).status_code == 404
 
     act_as(_seed_user("seed_ops_analyst"))
-    # ops analysts may resolve, but RLS hides cases not assigned to them
-    assert client.patch(url, json={"resolution_action": "Verified apprentice"}).status_code == 404
+    # Migration 0004: ops analysts see every case's demography queue (system-wide role).
+    assert client.get(base).json()["total"] == 4
+    assert client.get(f"/api/v1/cases/{processed_case}/extractions").status_code == 200
     act_as(ADMIN)
 
     reason = "Apprentice under the 1961 Act; HR confirmed DOB"

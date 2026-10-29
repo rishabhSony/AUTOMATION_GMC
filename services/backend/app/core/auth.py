@@ -2,7 +2,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 import jwt
-from fastapi import Depends, HTTPException, status
+import psycopg
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.config import get_settings
@@ -51,9 +52,41 @@ def _verify_clerk_token(token: str) -> str:
     return claims["sub"]
 
 
+def dev_mock_auth_enabled() -> bool:
+    settings = get_settings()
+    return settings.ENABLE_DEV_MOCK_AUTH and settings.ENVIRONMENT == "development"
+
+
+def _dev_mock_user(user_id: str, role: str | None) -> CurrentUser:
+    """
+    Offline testing only: trusts X-Dev-User-Id (an existing, active `users` row). The row's
+    own role drives RLS, so a mismatching X-Dev-User-Role is rejected, not escalated.
+    """
+    try:
+        with rls_transaction(RlsContext(user_id=user_id)) as conn:
+            row = conn.execute(
+                "select id::text, clerk_user_id, email, role::text, is_active"
+                " from users where id = %s::uuid",
+                (user_id,),
+            ).fetchone()
+    except psycopg.errors.InvalidTextRepresentation:
+        row = None
+    if not row or not row["is_active"]:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Unknown or inactive dev user")
+    if role and role != row["role"]:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "X-Dev-User-Role does not match the user")
+    return CurrentUser(row["id"], row["clerk_user_id"], row["email"], row["role"])
+
+
 def get_current_user(
     creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    dev_user_id: str | None = Header(default=None, alias="X-Dev-User-Id", include_in_schema=False),
+    dev_user_role: str | None = Header(
+        default=None, alias="X-Dev-User-Role", include_in_schema=False
+    ),
 ) -> CurrentUser:
+    if creds is None and dev_user_id and dev_mock_auth_enabled():
+        return _dev_mock_user(dev_user_id, dev_user_role)
     if creds is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing bearer token")
     clerk_user_id = _verify_clerk_token(creds.credentials)
