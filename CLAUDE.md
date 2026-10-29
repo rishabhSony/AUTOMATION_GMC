@@ -15,6 +15,19 @@ As of 29 Oct 2026:
   - Working: middleware redirects, `/login`, `/invite/accept`, a placeholder `/dashboard`, the Clerk webhook (tested with signed events), and `lib/auth.ts`.
   - Blocked on: the Clerk keys and `CLERK_WEBHOOK_SIGNING_SECRET` in `.env.local`, plus Clerk Dashboard setup (Restricted / invite-only sign-up mode, a webhook endpoint for `user.*` events).
   - Not built: the `/onboarding` screen from Plan Phase 3.
+- **Plan Phase 4 (ingestion & decryption) + Phase 6 (demography engine): done**, with 60 pytest tests passing.
+  - Files: `app/services/storage.py`, `app/services/demography.py`, and `app/api/v1/cases.py`.
+  - Endpoints: `POST /cases`, `POST /cases/{id}/upload` and `POST /cases/{id}/demography/process`.
+  - Performance: the engine handles 50k rows in about 0.1 s; the full API request takes about 2.6 s including the DB insert and Excel export.
+  - Not built yet:
+    - Celery dispatch (`process_case_pipeline`); Redis isn't installed.
+    - The `/decrypt` endpoint (decryption happens inside `/demography/process`).
+    - `GET` endpoints and `/demography/recalculate-age`. The engine's `apply_ages` is ready for the latter.
+  - The user called this work "Phase 4 & 5", but the demography engine is Plan Phase 6.
+- **Plan Phase 5 (AI extraction & sub-limit matcher): code done and unit-tested with a mocked OpenAI client.** The full suite is 111 tests.
+  - Files: `app/services/parser.py`, `extractor.py`, `field_registry.py`, `sublimits.py` and `derivations.py`.
+  - **No live `gpt-5.4-mini` call has been made yet:** `OPENAI_API_KEY` is empty. The strict tool schemas are checked offline against OpenAI's strict-mode rules.
+  - Extraction runs synchronously inside the request (no Celery yet).
 
 Phase 0 is complete: this file is the only agent-context file. Update this section and the Commands section as phases land.
 
@@ -107,14 +120,36 @@ bun run seed                                      # idempotent: 4 role users + B
 # Backend (services/backend), inside .venv
 uv venv .venv --python 3.11 && uv pip install -r requirements-dev.txt   # first-time setup
 source .venv/bin/activate
-uvicorn app.main:app --reload --port 8000        # health: GET /api/v1/health
-celery -A app.tasks.worker worker --loglevel=INFO   # from Phase 4
+uvicorn app.main:app --reload --port 8000        # health: GET /api/v1/health; docs: /docs
+celery -A app.tasks.worker worker --loglevel=INFO   # not wired yet (no app/tasks)
 brew install redis && brew services start redis   # native Redis (not installed yet), no Docker
 ruff check .                                      # lint
 ruff format .                                     # format
 
-# Tests (Phase N+1): Pytest for demography engine & sub-limit matcher; Playwright for UI/auth
-pytest path/to/test_file.py::test_name            # single test
+# Tests (services/backend; config in pyproject.toml). OpenAI is never called: tests inject
+# tests/llm_fakes.py (canned Pass 1/2 models from tests/fixtures/*.json, RFQ in rfq_apex.md).
+python -m pytest -q                               # all tests (first Docling import adds ~30 s)
+python -m pytest tests/test_extractor.py tests/test_sublimits.py tests/test_derivations.py -q
+python -m pytest tests/test_demography.py -k 50k  # 50k-row performance test (< 2 s)
+python -m pytest tests/test_demography.py::test_integrity_flags   # single test
+# tests/test_api_cases.py runs end-to-end against DATABASE_URL (skipped if the DB or the
+# seeded admin is unavailable). It overrides Clerk auth and deletes its own case and files.
+
+# Calling the API: every /api/v1/cases route needs `Authorization: Bearer <Clerk session JWT>`
+# (CLERK_JWKS_URL must be set in .env.backend.local). Encrypted census → 423 password_required.
+curl -X POST localhost:8000/api/v1/cases -H "Authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' -d '{"company_name":"Apex Logistics"}'
+curl -X POST localhost:8000/api/v1/cases/$CASE/upload -H "Authorization: Bearer $TOKEN" \
+  -F files=@census.xlsx -F files=@rfq.pdf          # optional: -F file_category=demography_census
+curl -X POST localhost:8000/api/v1/cases/$CASE/demography/process -H "Authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"password":"…","basis_mode":"policy_proposal_start_date","proposal_start_date":"2026-11-01"}'
+curl -X POST localhost:8000/api/v1/cases/$CASE/extract/rfq -H "Authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' -d '{"passwords":{"<file_id>":"…"}}'   # 423 lists locked files
+curl localhost:8000/api/v1/cases/$CASE/extractions -H "Authorization: Bearer $TOKEN"
+curl localhost:8000/api/v1/cases/$CASE/sublimits -H "Authorization: Bearer $TOKEN"
+curl -X PATCH localhost:8000/api/v1/cases/$CASE/manual-inputs -H "Authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' -d '{"pincode":"400051","brokerage_pct":"7.50"}'
 ```
 
 Lint/format tooling: **ESLint + Prettier** (frontend, Next.js 15) and **Ruff** (backend, Python 3.11+). These are project choices, not from `/docs`.
@@ -138,6 +173,44 @@ Env files (gitignored): `apps/web/.env.local` and `services/backend/.env.backend
   - `withSystemContext` (admin role) is only for trusted writers: the seed and the verified Clerk webhook.
   - The FastAPI backend will need the same per-transaction settings once it touches these tables.
 - `quotepulse_app` was granted `CREATE ON DATABASE quotepulse_dev`, which `drizzle-kit migrate` needs to create its `drizzle` journal schema.
+- API endpoints (`app/api/v1/cases.py`, all under `/api/v1`, Clerk Bearer JWT, RLS-scoped):
+
+  | Endpoint | Roles | Purpose |
+  | --- | --- | --- |
+  | `POST /cases` | sales_rm, underwriter, admin | Create a case. A sales RM is always the assignee. |
+  | `POST /cases/{id}/upload` | sales_rm, underwriter, admin | Multipart `files`. Category is inferred (csv/xls/xlsx → census, else RFQ) or set with `file_category`. Encryption is detected. |
+  | `POST /cases/{id}/demography/process` | + ops_analyst | Census → `demography_records`/`_exceptions`, group metrics, 7-col xlsx. |
+  | `POST /cases/{id}/extract/rfq` | sales_rm, underwriter, admin | Parse RFQ docs → Pass 1 → Pass 2 → sub-limit matcher; upserts results; archives JSON reports. |
+  | `GET /cases/{id}/extractions` | all | 5-column Quote Review Grid in registry order, with display labels and evidence. |
+  | `GET /cases/{id}/sublimits` | all | All 19 registry procedures, with Option 1–4 amounts and the match result (Matched / Unmatched / Review Required / Not Found). |
+  | `PATCH /cases/{id}/manual-inputs` | sales_rm, underwriter, admin | Edits `rater_type`, `brokerage_pct` (0–15), `pincode` (`^[1-9][0-9]{5}$`), `state`, `district`; re-derives Zone; writes `audit_logs`. |
+
+- Extraction pipeline (Phase 5):
+  - **Registry:** `field_registry.py` is the single source of truth: 95 BRD §6–7 fields, 88 of them sent to the LLM as a strict `Literal`. Names are lightly shortened from the BRD (e.g. modern-treatment titles). An extra `Incumbent Insurer` field exists to drive the BRD proposal-type rule.
+  - **LLM call:** instructor 1.17 deprecates `TOOLS_STRICT` (it silently becomes `TOOLS`), so strictness comes from `Mode.TOOLS` + `strict=True` per call + `extra="forbid"` models. `store=False` is sent while `OPENAI_ZERO_DATA_RETENTION=true`.
+  - **Grounding:** Pass 2's verdict is overridden by a deterministic check. If the verbatim evidence isn't in the parsed text, the field becomes Review Required / Low.
+  - **Fallbacks and validation:** missing fields use BRD defaults as `default_data`. The room-rent splitter in `derivations.py` fills Normal/ICU from the parent clause (`ai_derived`). The TPA rule and the co-pay %/PIN validators also live there.
+  - **Re-extraction:** rows with `is_manual_override`, and underwriter-approved sub-limits, are never overwritten.
+  - **Case updates:** grounded PIN/State/District from the RFQ fill only empty case columns. The case also gets `proposal_type`, `status`, `model_version` and `pipeline_duration_ms`, and an `ai_extraction` audit row records model, latency and token usage.
+  - **Sub-limit status:** stored with Doc 05 enums (`matched_option` option_1–4/unmatched; `status` rfq_data or review_required). The "Matched" label exists only in the API.
+  - **Ties:** when two tiers share an amount, the lowest option wins.
+  - **Non-numeric amounts** (e.g. "10% of SI") are kept raw with `cleaned_amount` null.
+  - **Zone:** looked up in `zone_master` by PIN, then by state + district, falling back to `"Review Required"` (user decision; the BRD says `Pan India`).
+  - **Parser:** PDFs use PyMuPDF with `[[File: x | Page n]]` markers and Markdown tables. DOCX, and scanned PDFs, use Docling from an in-memory stream (`PARSER_PDF_ENGINE=docling` forces it for every PDF). TXT/MD are decoded directly.
+- Backend (Phases 4 and 6):
+  - **Data access:** FastAPI uses raw SQL via psycopg 3 (no ORM; Drizzle owns the schema). Every query runs inside `app.core.db.rls_transaction(ctx)`.
+  - **Auth:** `app.core.auth.get_current_user` verifies the Clerk session JWT against `CLERK_JWKS_URL`, maps `sub` to the `users` row, and `require_roles(...)` enforces the Doc 05 §8 role sets.
+  - **Bulk loads:** Postgres refuses `COPY` into RLS tables, so bulk loads COPY into a temp table and then `INSERT … SELECT`.
+  - **Upload path:** `/cases/{id}/upload` follows the Doc 05 §8 catalog. The user's brief said `/files`.
+  - **Decryption:** the password is sent with the `/demography/process` request (`SecretStr`) and used only on in-memory buffers, because a separate `/decrypt` step would require storing it. The raw upload stays encrypted on disk.
+  - **Storage keys:** `case_files.storage_path` holds a key relative to the storage root (`inputs/raw/{case_id}/{ms}_{name}`), the same for local and S3. `LOCAL_STORAGE_PATH` is resolved relative to `services/backend`.
+- `demography_exceptions.record_id` is nullable (migration `0003`), a deviation from Doc 05. Critical rows (missing Age and DOB, or an unmapped relationship) aren't stored as records but still get an exception.
+- Exception type values follow Doc 05's lowercase style: `under18_employee`, `orphan_dependent`, `duplicate_member`, `age_dob_mismatch`, `missing_required_field`, `invalid_dob`, `missing_age_and_dob` (BRD `CRITICAL_ERROR`) and `unmapped_relationship`. Severity is `critical` only when the row couldn't be stored.
+- Demography engine choices:
+  - Header aliases are the BRD §9.1 list merged with the user's list; priority order matters (e.g. `Member Name` beats `Employee Name`).
+  - Dates are read day-first, falling back to MM/DD only when the day-first reading is impossible.
+  - A DOB after the basis date counts as invalid and falls back to the source age.
+  - Group Size = stored rows, duplicates included.
 - Routes (user decision): `/` redirects to `/dashboard` (signed in) or `/login`, not App Flow's public landing page. The signed-in home is `/dashboard` (App Flow), not `/workbench`.
   - Signed-in pages live under `app/(app)/`, whose layout re-checks the session. Middleware redirects with `?redirect=`, using prefix matching because Clerk 7 deprecates `createRouteMatcher`.
   - Admin-only pages must call `requireRole("admin")`.

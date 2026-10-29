@@ -17,3 +17,8 @@ docling
 openpyxl
 python-calamine
 ruff
+psycopg[binary]
+pyjwt[crypto]
+msoffcrypto-tool
+fastexcel
+xlsxwriter
