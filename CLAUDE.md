@@ -38,6 +38,7 @@ As of 29 Oct 2026:
   - Exceptions tab: unmatched sub-limit triage cards, quote fields needing review, and demographic anomalies with resolve/reopen (`?view=open|resolved|all`). Audit tab: append-only log, newest first.
   - Not built: `/cases/new` (create + upload UI), `/cases/[id]/treatments` (the quote grid shows those sections), the SSE pipeline hub, `/onboarding`, the decryption modal, and PDF bounding-box previews (no layout coordinates are stored).
   - Verified by running a copy of the app with Clerk stubbed out against the real API and DB in Playwright: every tab, PIN → Zone, overrides, recalculation, resolutions and export download. No console errors.
+- **Branch consolidation: done.** `claude/vigilant-allen-l2y8m2` was fast-forwarded into `main`. `scripts/dev.sh` (one-command startup), `scripts/smoke_test.py` (API smoke test) and `scripts/init_local_db.sql` (DB bootstrap) were added; see §5 "Organization Laptop Setup".
 - **Final integration (offline-testable end to end): done** (130 pytest tests).
   - **Mock modes:** env-toggled mock auth (web + API) and mock AI, so the whole app runs with no Clerk or OpenAI keys. See §5 "Running the app".
   - **New screens:** `/cases/new` (3-step intake → create, upload, process), the password modal (423 → modal, 422 → shake + attempt counter), `/cases/[id]/pipeline` (polls the 4 stages, then opens the quote review), and `/cases/[id]/treatments` (the 20 BRD §7.1 modern treatments).
@@ -170,6 +171,40 @@ curl localhost:8000/api/v1/cases/$CASE/sublimits -H "Authorization: Bearer $TOKE
 curl -X PATCH localhost:8000/api/v1/cases/$CASE/manual-inputs -H "Authorization: Bearer $TOKEN" \
   -H 'content-type: application/json' -d '{"pincode":"400051","brokerage_pct":"7.50"}'
 ```
+
+### Organization Laptop Setup (3-Step Quickstart)
+
+Prerequisites (macOS; no Docker):
+- PostgreSQL 16 running natively: `brew install postgresql@16 && brew services start postgresql@16`
+- Bun 1.x
+- uv; it provides Python 3.11 for the backend venv.
+
+1. **Clone and copy the env files.**
+   ```bash
+   git clone https://github.com/rishabhSony/AUTOMATION_GMC.git && cd AUTOMATION_GMC
+   cp apps/web/.env.example apps/web/.env.local
+   cp services/backend/.env.example services/backend/.env.backend.local
+   ```
+   `scripts/dev.sh` also copies the templates if they're missing.
+2. **Create the database** (once, as a Postgres superuser; safe to re-run). This creates role `quotepulse_app` / `dev_password_123`, database `quotepulse_dev`, the `CREATE` grant and `public` schema ownership.
+   ```bash
+   psql -d postgres -f scripts/init_local_db.sql
+   ```
+3. **Start everything.**
+   ```bash
+   ./scripts/dev.sh
+   ```
+   - It checks Postgres on :5432 and creates any missing env files.
+   - On first run it installs dependencies (`bun install`, uv venv).
+   - It runs `db:migrate` (through `0004_ops_analyst_rls`) and the idempotent seed, then starts the API on :8000 and the web app on :3000. Ctrl+C stops both.
+   - Mock mode is exported for these processes only: `NEXT_PUBLIC_ENABLE_DEV_MOCK_AUTH`, `ENABLE_DEV_MOCK_AUTH`, `ENVIRONMENT=development`. `./scripts/dev.sh --live` uses the env files as-is instead.
+
+   Then, in another terminal, run `python3 scripts/smoke_test.py`. It needs only the standard library plus `psql` on PATH to look up the seed admin, or pass `--user-id`.
+   - It hits `/health`, creates a "Smoke Test …" case with intake fields, and uploads `samples/rfq_apex.md` plus the locked census.
+   - It expects 423 without the password, then 202 from `/process` with it. `/process` is asynchronous, so success is 202, not 200.
+   - It polls `/pipeline-status` until all 4 stages are `done`, checks the 5- and 7-column grids, and prints the case URL.
+
+   Finally, follow the 14-step **Local dry-run checklist** below in the browser.
 
 ### Running the app
 
