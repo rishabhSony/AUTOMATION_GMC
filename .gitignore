@@ -1,0 +1,18 @@
+.DS_Store
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.ruff_cache/
+.pytest_cache/
+
+# Local storage: keep the folder tree, ignore case files
+storage/**
+!storage/**/
+!storage/**/.gitkeep
