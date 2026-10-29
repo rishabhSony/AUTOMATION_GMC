@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Literal
 
-import httpx
+import httpx2
 import instructor
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field
@@ -131,7 +131,8 @@ def _openai_client() -> instructor.Instructor:
         raise LLMNotConfiguredError(
             "OPENAI_API_KEY is not set (services/backend/.env.backend.local)"
         )
-    http_client = httpx.Client(
+    # openai>=3 is built on httpx2 (not httpx); pass a client of the same library.
+    http_client = httpx2.Client(
         proxy=settings.HTTPS_PROXY or None, timeout=settings.OPENAI_TIMEOUT_SECONDS
     )
     openai_client = OpenAI(

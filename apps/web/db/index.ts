@@ -4,15 +4,22 @@ import postgres from "postgres";
 
 import * as schema from "./schema";
 
-if (!process.env.DATABASE_URL) {
-  throw new Error("DATABASE_URL is not set (apps/web/.env.local)");
+function createDb() {
+  if (!process.env.DATABASE_URL) {
+    throw new Error("DATABASE_URL is not set (apps/web/.env.local)");
+  }
+  return drizzle(postgres(process.env.DATABASE_URL), { schema });
 }
 
-const client = postgres(process.env.DATABASE_URL);
+// Created on first query, not at import: `next build` (e.g. the production image)
+// imports this module without a database, which is only provided at runtime.
+let instance: ReturnType<typeof createDb> | undefined;
 
-export const db = drizzle(client, { schema });
+export function getDb() {
+  return (instance ??= createDb());
+}
 
-export type Db = typeof db;
+export type Db = ReturnType<typeof createDb>;
 export type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 export type UserRole = (typeof schema.userRoleEnum.enumValues)[number];
 
@@ -31,7 +38,7 @@ export function withRlsContext<T>(
   ctx: RlsContext,
   fn: (tx: Tx) => Promise<T>,
 ): Promise<T> {
-  return db.transaction(async (tx) => {
+  return getDb().transaction(async (tx) => {
     await tx.execute(sql`
       select
         set_config('app.current_user_id', ${ctx.userId ?? ""}, true),
@@ -51,5 +58,6 @@ export function withSystemContext<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
 }
 
 export async function closeDb() {
-  await client.end();
+  await instance?.$client.end();
+  instance = undefined;
 }

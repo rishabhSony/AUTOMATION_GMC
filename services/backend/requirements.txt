@@ -10,6 +10,8 @@ boto3
 python-multipart
 instructor
 openai
+# extractor.py builds the OpenAI client's HTTP client (proxy + timeout) directly
+httpx2>=2.7,<3
 pypdf
 pdfplumber
 pymupdf
