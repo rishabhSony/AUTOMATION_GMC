@@ -1,0 +1,1 @@
+ALTER TABLE "demography_exceptions" ALTER COLUMN "record_id" DROP NOT NULL;
