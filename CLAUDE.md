@@ -28,6 +28,9 @@ As of 29 Oct 2026:
   - Files: `app/services/parser.py`, `extractor.py`, `field_registry.py`, `sublimits.py` and `derivations.py`.
   - **No live `gpt-5.4-mini` call has been made yet:** `OPENAI_API_KEY` is empty. The strict tool schemas are checked offline against OpenAI's strict-mode rules.
   - Extraction runs synchronously inside the request (no Celery yet).
+- **Doc 05 §8 read/review/export API: done** (122 pytest tests). Files: `app/api/v1/workbench.py`, `app/api/v1/exports.py`, `app/services/exports.py`, plus `GET /cases` and `GET /cases/{id}` in `cases.py`.
+  - Still missing from Doc 05 §8: `/decrypt`, `/process` (Celery), `/pipeline-status` (SSE) and `POST /recalculate-zone` (zone is already re-derived by `/manual-inputs`).
+  - 50k-member census: recalculate-age ≈ 2.6 s worst case (every age changes; only changed rows are written), a 1,000-row roster page ≈ 0.15 s.
 
 Phase 0 is complete: this file is the only agent-context file. Update this section and the Commands section as phases land.
 
@@ -184,6 +187,25 @@ Env files (gitignored): `apps/web/.env.local` and `services/backend/.env.backend
   | `GET /cases/{id}/extractions` | all | 5-column Quote Review Grid in registry order, with display labels and evidence. |
   | `GET /cases/{id}/sublimits` | all | All 19 registry procedures, with Option 1–4 amounts and the match result (Matched / Unmatched / Review Required / Not Found). |
   | `PATCH /cases/{id}/manual-inputs` | sales_rm, underwriter, admin | Edits `rater_type`, `brokerage_pct` (0–15), `pincode` (`^[1-9][0-9]{5}$`), `state`, `district`; re-derives Zone; writes `audit_logs`. |
+  | `GET /cases` | all | Paginated (`page`, `page_size` ≤ 100), repeatable `status` filter, `q` search on company/case number. Returns `summary` counts for the dashboard cards. |
+  | `GET /cases/{id}` | all | Header, manual inputs, metrics, files, and review counts. |
+  | `GET /cases/{id}/demography` | all | 7-column roster, `page_size` ≤ 1000, `flagged_only`. |
+  | `POST /cases/{id}/demography/recalculate-age` | ops_analyst, underwriter, admin | Reruns `demography.apply_ages` on stored rows for `basis_mode` (+ `proposal_start_date`, else the stored one). |
+  | `GET /cases/{id}/demography/exceptions` | all | Queue sorted open → critical → row; filters `resolved`, `exception_type`. |
+  | `PATCH /cases/{id}/demography/exceptions/{exc_id}` | ops_analyst, underwriter, admin | `resolution_action` (5–2000 chars) required; `is_resolved` (default true) can reopen. |
+  | `PATCH /cases/{id}/extractions/{field_name}` | sales_rm, underwriter, admin | `coverage_details`/`proposed_details` + `justification`; sets Manual / High, `is_manual_override`, `overridden_by_user_id`, `override_reason`. |
+  | `PATCH /cases/{id}/sublimits/{proc_name}` | underwriter, admin | `matched_option` (`option_1`–`4`, or `unmatched` to approve the exact amount) + `justification`. |
+  | `GET /cases/{id}/export/quote-excel`, `/export/demography-excel` | all | openpyxl workbook archived to `outputs/analysis/{case_id}/`, `case_export` audit row, streamed back. |
+  | `GET /cases/{id}/audit` | all | Audit trail, newest first. From TRD §11 (Doc 05 has no audit route); the audit tab needs it. |
+- Review API decisions:
+  - Field and procedure names contain `/` (e.g. `Maternity Expenses / Benefits`), so those routes use `{name:path}`; clients send `encodeURIComponent(name)`.
+  - `PATCH /extractions` rejects the manual-input fields (Rater Type, Brokerage %, PIN Code, State, District) and Zone with 422: `/manual-inputs` keeps the `cases` columns, grid rows and Zone in sync.
+  - `PATCH /extractions` on a field the extraction never produced inserts the row (manual fill-in).
+  - Sub-limit approval sets `status = 'manual'` and `is_underwriter_approved`. Approving a tier for a procedure missing from the RFQ stores that tier's amount as the value; `unmatched` needs an RFQ amount.
+  - Recalculate-age regenerates only age-dependent exceptions (`under18_employee`, `age_dob_mismatch`, and `invalid_dob` where a DOB was parsed). Resolved ones are kept and suppress an identical new one. A DOB now after the basis date with no source age keeps its previous age.
+  - Quote workbook (`gmc_quote_summary_sheet.xlsx`): sheets Quote Summary (case header + 5-column grid), Hospitalization & Treatments, Procedure Sub-Limits, Underwriter Notes (audit rows with a justification).
+  - The browser calls FastAPI directly, so CORS allows `CORS_ALLOWED_ORIGINS` (default `http://localhost:3000`).
+  - RLS limits ops analysts to cases assigned to them (Doc 05 §3 as written), even though the role matrix says "system-wide".
 
 - Extraction pipeline (Phase 5):
   - **Registry:** `field_registry.py` is the single source of truth: 95 BRD §6–7 fields, 88 of them sent to the LLM as a strict `Literal`. Names are lightly shortened from the BRD (e.g. modern-treatment titles). An extra `Incumbent Insurer` field exists to drive the BRD proposal-type rule.

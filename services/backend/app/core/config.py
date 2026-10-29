@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     CLERK_JWKS_URL: str = ""
     CLERK_ISSUER: str = ""
     CLERK_AUTHORIZED_PARTIES: str = "http://localhost:3000"
+    # Browser origins allowed to call the API (comma-separated)
+    CORS_ALLOWED_ORIGINS: str = "http://localhost:3000"
 
     MAX_UPLOAD_BYTES: int = 50 * 1024 * 1024
 

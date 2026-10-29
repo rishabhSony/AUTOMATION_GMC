@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 
 import polars as pl
 import psycopg
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field, SecretStr
 
@@ -36,6 +36,7 @@ router = APIRouter(prefix="/cases", tags=["cases"])
 # Role sets from Backend Schema v4.0 §8 (API catalog).
 CASE_WRITERS = ("sales_rm", "underwriter", "admin")
 DEMOGRAPHY_PROCESSORS = ("sales_rm", "underwriter", "admin", "ops_analyst")
+ALL_ROLES = DEMOGRAPHY_PROCESSORS
 
 FileCategory = Literal["rfq_document", "demography_census", "supporting_info"]
 
@@ -99,6 +100,130 @@ def create_case(
             (case_number, body.company_name, body.proposal_type, assignee),
         ).fetchone()
     return row
+
+
+# ---------------------------------------------------------------------------
+# GET /cases — paginated case list with status filter (Doc 05 §8.1)
+# ---------------------------------------------------------------------------
+
+CaseStatus = Literal[
+    "draft", "uploaded", "processing", "review_required", "ready_for_quote", "completed", "failed",
+]  # fmt: skip
+CASE_STATUS_LABELS = {
+    "draft": "Draft",
+    "uploaded": "Uploaded",
+    "processing": "Processing",
+    "review_required": "Needs Review",
+    "ready_for_quote": "Ready for Quote",
+    "completed": "Completed",
+    "failed": "Failed",
+}
+
+
+@router.get("")
+def list_cases(
+    status_filter: Annotated[list[CaseStatus] | None, Query(alias="status")] = None,
+    q: Annotated[str | None, Query(max_length=100)] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 25,
+    user: CurrentUser = Depends(require_roles(*ALL_ROLES)),
+) -> dict:
+    # RLS limits sales RMs to their assigned cases; filters narrow further.
+    where = ["(%(statuses)s::case_status[] is null or c.status = any(%(statuses)s::case_status[]))"]
+    params: dict = {"statuses": status_filter or None, "limit": page_size,
+                    "offset": (page - 1) * page_size}  # fmt: skip
+    if q and q.strip():
+        where.append("(c.company_name ilike %(q)s or c.case_number ilike %(q)s)")
+        params["q"] = f"%{q.strip()}%"
+    clause = " and ".join(where)
+
+    with rls_transaction(user.rls) as conn:
+        rows = conn.execute(
+            "select c.id::text, c.case_number, c.company_name, c.status::text,"
+            " c.proposal_type, c.group_size, c.primary_members_count, c.sme_flag, c.zone,"
+            " c.created_at, c.updated_at, u.full_name as assignee_name,"
+            " (select count(*) from demography_exceptions e"
+            "   where e.case_id = c.id and not e.is_resolved) as open_exceptions,"
+            " count(*) over () as total"
+            f" from cases c left join users u on u.id = c.assigned_user_id where {clause}"
+            " order by c.created_at desc limit %(limit)s offset %(offset)s",
+            params,
+        ).fetchall()
+        summary = conn.execute(
+            "select count(*) as total,"
+            " count(*) filter (where status = 'review_required') as needs_review,"
+            " count(*) filter (where status in ('ready_for_quote', 'completed')) as prepared,"
+            " avg(pipeline_duration_ms)::int as avg_pipeline_ms from cases"
+        ).fetchone()
+
+    total = rows[0]["total"] if rows else 0
+    if not rows and page > 1:  # past the last page: report the real total
+        with rls_transaction(user.rls) as conn:
+            total = conn.execute(
+                f"select count(*) as n from cases c where {clause}", params
+            ).fetchone()["n"]
+    return {
+        "items": [
+            {k: v for k, v in r.items() if k != "total"}
+            | {"status_label": CASE_STATUS_LABELS[r["status"]]}
+            for r in rows
+        ],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "summary": summary,
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET /cases/{case_id} — case header, manual inputs, derived metrics
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{case_id}")
+def get_case(case_id: str, user: CurrentUser = Depends(require_roles(*ALL_ROLES))) -> dict:
+    with rls_transaction(user.rls) as conn:
+        case = conn.execute(
+            "select c.id::text, c.case_number, c.company_name, c.status::text, c.proposal_type,"
+            " c.rater_type, c.brokerage_pct, c.pincode, c.state, c.district, c.zone,"
+            " c.age_basis_mode::text, c.proposal_start_date, c.group_size,"
+            " c.primary_members_count, c.sme_flag, c.pipeline_duration_ms, c.model_version,"
+            " c.created_at, c.updated_at, c.assigned_user_id::text, u.full_name as assignee_name,"
+            " u.email as assignee_email"
+            " from cases c left join users u on u.id = c.assigned_user_id where c.id = %s",
+            (case_id,),
+        ).fetchone()
+        if case is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Case not found")
+        files = conn.execute(
+            "select id::text, original_filename, file_extension, file_size,"
+            " file_category::text, is_encrypted, is_decrypted_successfully, uploaded_at"
+            " from case_files where case_id = %s order by uploaded_at",
+            (case_id,),
+        ).fetchall()
+        counts = conn.execute(
+            "select"
+            " (select count(*) from demography_records where case_id = %(id)s) as members,"
+            " (select count(*) from demography_exceptions"
+            "   where case_id = %(id)s and not is_resolved) as open_exceptions,"
+            " (select count(*) from rfq_extractions where case_id = %(id)s) as fields,"
+            " (select count(*) from rfq_extractions where case_id = %(id)s"
+            "   and source_status in ('review_required', 'conflict', 'ambiguous'))"
+            "   as fields_needing_review,"
+            " (select count(*) from procedure_sublimits where case_id = %(id)s"
+            "   and matched_option = 'unmatched' and not is_underwriter_approved)"
+            "   as unmatched_sublimits",
+            {"id": case_id},
+        ).fetchone()
+
+    start = case["proposal_start_date"]
+    return case | {
+        "status_label": CASE_STATUS_LABELS[case["status"]],
+        "brokerage_pct": _jsonable(case["brokerage_pct"]),
+        "proposal_start_date": start.date().isoformat() if start else None,
+        "files": files,
+        "counts": counts,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +458,6 @@ def process_demography(
 # POST /cases/{case_id}/extract/rfq — parse → Pass 1 → Pass 2 → sub-limit matcher
 # ---------------------------------------------------------------------------
 
-ALL_ROLES = ("sales_rm", "underwriter", "admin", "ops_analyst")
 QUOTE_EXPORT = "quote_extracted_terms.json"
 SUBLIMIT_EXPORT = "sublimit_matching_report.json"
 RFQ_EXTENSIONS = {"pdf", "docx", "txt", "md"}
@@ -358,11 +482,14 @@ def _registry(conn: psycopg.Connection) -> dict[str, sublimits.RegistryRow]:
     }
 
 
-def _audit(conn, user: CurrentUser, case_id: str, action: str, target: str, old, new) -> None:
+def _audit(
+    conn, user: CurrentUser, case_id: str, action: str, target: str, old, new,
+    justification: str | None = None,
+) -> None:  # fmt: skip
     conn.execute(
         "insert into audit_logs (case_id, user_id, user_email, action, target_entity,"
-        " old_value, new_value) values (%s, %s, %s, %s, %s, %s, %s)",
-        (case_id, user.id, user.email, action, target, Jsonb(old), Jsonb(new)),
+        " old_value, new_value, justification_reason) values (%s, %s, %s, %s, %s, %s, %s, %s)",
+        (case_id, user.id, user.email, action, target, Jsonb(old), Jsonb(new), justification),
     )
 
 
