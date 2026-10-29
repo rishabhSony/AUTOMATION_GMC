@@ -13,6 +13,7 @@ import type {
   AgeBasisMode,
   AuditTrail,
   CaseDetail,
+  CaseIntake,
   CaseList,
   CaseStatus,
   DemographyException,
@@ -20,10 +21,13 @@ import type {
   ExceptionQueue,
   ManualInputs,
   ManualInputsResult,
+  PipelineStatus,
   QuoteGrid,
   RecalculateResult,
   SublimitOption,
   SublimitRow,
+  UploadedFile,
+  ZoneLookup,
 } from "@/lib/api/types";
 
 export const queryKeys = {
@@ -233,5 +237,80 @@ export function useResolveException(caseId: string) {
         { method: "PATCH", body },
       ),
     onSuccess: invalidate,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Intake & pipeline
+// ---------------------------------------------------------------------------
+
+export function useCreateCase() {
+  const api = useApi();
+  return useMutation({
+    mutationFn: (body: CaseIntake) =>
+      api.json<{ id: string; case_number: string }>("/cases", {
+        method: "POST",
+        body,
+      }),
+  });
+}
+
+export function useUploadFiles() {
+  const api = useApi();
+  return useMutation({
+    mutationFn: ({ caseId, files }: { caseId: string; files: File[] }) => {
+      const form = new FormData();
+      for (const file of files) form.append("files", file);
+      return api.json<{ files: UploadedFile[] }>(`/cases/${caseId}/upload`, {
+        method: "POST",
+        form,
+      });
+    },
+  });
+}
+
+/** POST /process; passwords are sent once and used in the API's memory only. */
+export function useStartPipeline() {
+  const api = useApi();
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      caseId,
+      passwords,
+    }: {
+      caseId: string;
+      passwords: Record<string, string>;
+    }) =>
+      api.json<PipelineStatus>(`/cases/${caseId}/process`, {
+        method: "POST",
+        body: { passwords },
+      }),
+    onSuccess: (_data, { caseId }) =>
+      client.invalidateQueries({ queryKey: queryKeys.case(caseId) }),
+  });
+}
+
+export function usePipelineStatus(caseId: string) {
+  const api = useApi();
+  return useQuery({
+    queryKey: [...queryKeys.case(caseId), "pipeline"],
+    queryFn: () => api.json<PipelineStatus>(`/cases/${caseId}/pipeline-status`),
+    // Poll while a run is in flight (UI brief: live stepper).
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      return data?.status === "processing" && data.in_memory_run ? 1000 : false;
+    },
+    staleTime: 0,
+  });
+}
+
+export function useZoneLookup(pincode: string | null) {
+  const api = useApi();
+  return useQuery({
+    queryKey: ["reference", "zone", pincode],
+    queryFn: () =>
+      api.json<ZoneLookup>("/reference/zone", { params: { pincode } }),
+    enabled: !!pincode,
+    staleTime: Infinity,
   });
 }

@@ -4,7 +4,12 @@ import { createContext, useContext } from "react";
 
 import type { UserRole } from "@/lib/api/types";
 
-export type SessionUser = { email: string; fullName: string; role: UserRole };
+export type SessionUser = {
+  id: string;
+  email: string;
+  fullName: string;
+  role: UserRole;
+};
 
 const SessionUserContext = createContext<SessionUser | null>(null);
 

@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 
 import { clerkAppearance } from "@/lib/clerk-appearance";
+import { DEV_MOCK_AUTH } from "@/lib/dev-mode";
 
 import "./globals.css";
 
@@ -26,11 +27,15 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  return (
-    <ClerkProvider appearance={clerkAppearance}>
-      <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`}>
-        <body className="antialiased">{children}</body>
-      </html>
-    </ClerkProvider>
+  const page = (
+    <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`}>
+      <body className="antialiased">{children}</body>
+    </html>
+  );
+  // Dev mock mode runs without Clerk keys, so there is no ClerkProvider (lib/dev-mode.ts).
+  return DEV_MOCK_AUTH ? (
+    page
+  ) : (
+    <ClerkProvider appearance={clerkAppearance}>{page}</ClerkProvider>
   );
 }

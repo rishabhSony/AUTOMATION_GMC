@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 
-// The pipeline hub (App Flow route 7) needs the SSE status stream, which isn't built yet.
+// The workbench opens on the quote review; the pipeline hub (App Flow route 7) is /pipeline.
 export default async function CasePage({
   params,
 }: {

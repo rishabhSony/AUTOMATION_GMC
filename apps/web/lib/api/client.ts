@@ -3,6 +3,9 @@
 import { useAuth } from "@clerk/nextjs";
 import { useCallback } from "react";
 
+import { useSessionUser } from "@/components/providers/session-user";
+import { DEV_MOCK_AUTH } from "@/lib/dev-mode";
+
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
@@ -48,28 +51,50 @@ type RequestOptions = {
   method?: "GET" | "POST" | "PATCH";
   params?: Record<string, unknown>;
   body?: unknown;
+  form?: FormData; // multipart uploads (the browser sets the boundary header)
 };
 
 /**
  * Fetcher for the FastAPI backend: every call carries the Clerk session token as
  * `Authorization: Bearer …`, which the API verifies against Clerk's JWKS.
  */
-export function useApi() {
+type AuthHeaders = () => Promise<Record<string, string>>;
+
+function useClerkHeaders(): AuthHeaders {
   const { getToken } = useAuth();
+  return useCallback(async (): Promise<Record<string, string>> => {
+    const token = await getToken();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }, [getToken]);
+}
+
+/** Dev mock mode: identifies the mock user to an API running ENABLE_DEV_MOCK_AUTH=true. */
+function useDevMockHeaders(): AuthHeaders {
+  const { id, role } = useSessionUser();
+  return useCallback(
+    async () => ({ "X-Dev-User-Id": id, "X-Dev-User-Role": role }),
+    [id, role],
+  );
+}
+
+// Chosen once at build time: Clerk's hooks need a ClerkProvider, absent in mock mode.
+const useAuthHeaders = DEV_MOCK_AUTH ? useDevMockHeaders : useClerkHeaders;
+
+export function useApi() {
+  const authHeaders = useAuthHeaders();
 
   const request = useCallback(
     async (
       path: string,
-      { method = "GET", params, body }: RequestOptions = {},
+      { method = "GET", params, body, form }: RequestOptions = {},
     ) => {
-      const token = await getToken();
       const res = await fetch(`${API_URL}${path}${toQuery(params)}`, {
         method,
         headers: {
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(await authHeaders()),
           ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
         },
-        body: body !== undefined ? JSON.stringify(body) : undefined,
+        body: form ?? (body !== undefined ? JSON.stringify(body) : undefined),
       });
       if (!res.ok) {
         const payload = await res.json().catch(() => null);
@@ -77,7 +102,7 @@ export function useApi() {
       }
       return res;
     },
-    [getToken],
+    [authHeaders],
   );
 
   const json = useCallback(

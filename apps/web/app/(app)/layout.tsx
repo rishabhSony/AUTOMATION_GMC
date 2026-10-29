@@ -1,11 +1,12 @@
-import { auth } from "@clerk/nextjs/server";
 import { UserButton } from "@clerk/nextjs";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { AppProviders } from "@/components/providers/query-provider";
 import { SessionUserProvider } from "@/components/providers/session-user";
-import { getCurrentUser } from "@/lib/auth";
+import { DevRoleSwitcher } from "@/components/providers/dev-role-switcher";
+import { getCurrentUser, isSignedIn } from "@/lib/auth";
+import { DEV_MOCK_AUTH } from "@/lib/dev-mode";
 
 const ROLE_LABELS = {
   admin: "Admin",
@@ -21,17 +22,17 @@ export default async function AppLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const { userId } = await auth();
-  if (!userId) redirect("/login");
+  if (!(await isSignedIn())) redirect("/login");
 
   const user = await getCurrentUser();
   if (!user) {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center gap-3 bg-[#F8FAFC] p-6">
-        <UserButton />
+        {!DEV_MOCK_AUTH && <UserButton />}
         <p className="max-w-sm text-center text-sm text-[#64748B]">
-          Your account is signed in but not provisioned in QuotePulse yet, or it
-          has been deactivated. Contact an administrator.
+          {DEV_MOCK_AUTH
+            ? "Dev mock auth found no active seeded user for this role. Run `bun run seed`."
+            : "Your account is signed in but not provisioned in QuotePulse yet, or it has been deactivated. Contact an administrator."}
         </p>
       </main>
     );
@@ -39,7 +40,12 @@ export default async function AppLayout({
 
   return (
     <SessionUserProvider
-      user={{ email: user.email, fullName: user.fullName, role: user.role }}
+      user={{
+        id: user.id,
+        email: user.email,
+        fullName: user.fullName,
+        role: user.role,
+      }}
     >
       <AppProviders>
         <div className="min-h-screen bg-[#F8FAFC] text-[#0F172A]">
@@ -54,7 +60,7 @@ export default async function AppLayout({
               <span>
                 {user.fullName} · {ROLE_LABELS[user.role]}
               </span>
-              <UserButton />
+              {DEV_MOCK_AUTH ? <DevRoleSwitcher /> : <UserButton />}
             </div>
           </header>
           {children}

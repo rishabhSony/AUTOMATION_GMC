@@ -14,7 +14,9 @@ import { useApi } from "@/lib/api/client";
 import { useCase } from "@/lib/api/queries";
 
 const TABS = [
+  { slug: "pipeline", label: "Pipeline" },
   { slug: "quote", label: "Quote Review" },
+  { slug: "treatments", label: "Modern Treatments" },
   { slug: "sublimits", label: "Procedure Sub-Limits" },
   { slug: "demography", label: "Demography" },
   { slug: "exceptions", label: "Exceptions" },

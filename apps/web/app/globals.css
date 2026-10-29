@@ -128,3 +128,23 @@
     @apply font-sans;
   }
 }
+
+/* Password challenge: 3-cycle horizontal shake on a wrong password (UI brief §4.2). */
+@keyframes qp-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  16%,
+  50%,
+  83% {
+    transform: translateX(-4px);
+  }
+  33%,
+  66% {
+    transform: translateX(4px);
+  }
+}
+.animate-qp-shake {
+  animation: qp-shake 250ms ease-in-out;
+}

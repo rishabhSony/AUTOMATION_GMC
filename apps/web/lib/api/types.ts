@@ -242,3 +242,51 @@ export type AuditTrail = {
 
 export type SublimitOption =
   "option_1" | "option_2" | "option_3" | "option_4" | "unmatched";
+
+export type CaseIntake = {
+  company_name: string;
+  proposal_start_date?: string | null;
+  policy_tenure?: string | null;
+  incumbent_insurer?: string | null;
+  brokerage_pct?: string | null;
+  rater_type?: string | null;
+  pincode?: string | null;
+};
+
+export type UploadedFile = {
+  id: string;
+  original_filename: string;
+  file_category: CaseFile["file_category"];
+  is_encrypted: boolean;
+};
+
+export type LockedFile = { file_id: string; filename: string };
+
+export type PipelineStageState =
+  "pending" | "running" | "done" | "skipped" | "failed";
+
+export type PipelineStage = {
+  key: "intake" | "demography" | "extraction" | "matching";
+  label: string;
+  state: PipelineStageState;
+  detail: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+};
+
+export type PipelineStatus = {
+  case_id: string;
+  status: CaseStatus;
+  stages: PipelineStage[];
+  terminal: boolean;
+  can_start: boolean;
+  error: string | null;
+  in_memory_run: boolean;
+  started_at?: string;
+  finished_at?: string | null;
+};
+
+export type ZoneLookup = {
+  zone: string;
+  matched_by: "pincode" | "district" | "none";
+};

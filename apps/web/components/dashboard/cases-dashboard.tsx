@@ -7,7 +7,7 @@ import {
   useReactTable,
 } from "@tanstack/react-table";
 import { cn } from "cn";
-import { FolderOpenIcon, SearchIcon } from "lucide-react";
+import { FolderOpenIcon, PlusIcon, SearchIcon } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -19,6 +19,7 @@ import {
   useQueryStates,
 } from "nuqs";
 
+import { useCan } from "@/components/providers/session-user";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -41,6 +42,10 @@ const FILTERS: { label: string; statuses: CaseStatus[] }[] = [
   { label: "Completed", statuses: ["completed"] },
   { label: "Failed", statuses: ["failed"] },
 ];
+
+// Cases that haven't finished processing open on the pipeline screen.
+const caseHref = (c: CaseListItem) =>
+  `/cases/${c.id}/${["draft", "uploaded", "processing", "failed"].includes(c.status) ? "pipeline" : "quote"}`;
 
 const sameSet = (a: CaseStatus[], b: CaseStatus[]) =>
   a.length === b.length && a.every((s) => b.includes(s));
@@ -100,6 +105,7 @@ const columns = [
 
 export function CasesDashboard() {
   const router = useRouter();
+  const canCreate = useCan("editQuote");
   const [{ status, q, page }, setFilters] = useQueryStates({
     status: parseAsArrayOf(parseAsStringLiteral(CASE_STATUSES)).withDefault([]),
     q: parseAsString.withDefault(""),
@@ -124,9 +130,18 @@ export function CasesDashboard() {
 
   return (
     <main className="mx-auto flex max-w-7xl flex-col gap-6 p-6">
-      <h1 className="font-heading text-[28px] leading-9 font-bold tracking-[-0.02em]">
-        Quotation Cases
-      </h1>
+      <div className="flex items-center justify-between gap-3">
+        <h1 className="font-heading text-[28px] leading-9 font-bold tracking-[-0.02em]">
+          Quotation Cases
+        </h1>
+        {canCreate && (
+          <Button asChild>
+            <Link href="/cases/new">
+              <PlusIcon /> New Quote Case
+            </Link>
+          </Button>
+        )}
+      </div>
 
       <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Metric label="Total Cases" value={summary?.total} />
@@ -201,6 +216,13 @@ export function CasesDashboard() {
                 ? "No cases match these filters."
                 : "Upload an RFQ tender package and member census to generate your first automated GMC quote."}
             </p>
+            {!filtered && canCreate && (
+              <Button asChild className="mt-2">
+                <Link href="/cases/new">
+                  <PlusIcon /> Create First Quote Case
+                </Link>
+              </Button>
+            )}
           </div>
         ) : (
           <table className={cn("w-full text-sm", isFetching && "opacity-70")}>
@@ -222,14 +244,14 @@ export function CasesDashboard() {
               {table.getRowModel().rows.map((row) => (
                 <tr
                   key={row.id}
-                  onClick={() => router.push(`/cases/${row.original.id}/quote`)}
+                  onClick={() => router.push(caseHref(row.original))}
                   className="h-10 cursor-pointer border-b border-[#E2E8F0] last:border-0 hover:bg-[#F1F5F9]"
                 >
                   {row.getVisibleCells().map((cell) => (
                     <td key={cell.id} className="px-3 whitespace-nowrap">
                       {cell.column.id === "case_number" ? (
                         <Link
-                          href={`/cases/${row.original.id}/quote`}
+                          href={caseHref(row.original)}
                           onClick={(e) => e.stopPropagation()}
                           className="text-[#0052CC] hover:underline"
                         >

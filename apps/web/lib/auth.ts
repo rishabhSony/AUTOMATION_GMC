@@ -1,11 +1,13 @@
 import "server-only";
 
 import { auth } from "@clerk/nextjs/server";
-import { eq } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { cookies } from "next/headers";
 import { cache } from "react";
 
-import { withRlsContext, type Tx } from "@/db";
+import { withRlsContext, withSystemContext, type Tx } from "@/db";
 import { users } from "@/db/schema";
+import { DEV_MOCK_AUTH, DEV_ROLE_COOKIE, isDevRole } from "@/lib/dev-mode";
 
 export type CurrentUser = typeof users.$inferSelect;
 
@@ -14,6 +16,7 @@ export type CurrentUser = typeof users.$inferSelect;
  * not yet synced by the webhook, or deactivated. Cached per request.
  */
 export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
+  if (DEV_MOCK_AUTH) return getDevMockUser();
   const { userId: clerkUserId } = await auth();
   if (!clerkUserId) return null;
 
@@ -48,4 +51,32 @@ export async function requireRole(...roles: CurrentUser["role"][]) {
   const user = await getCurrentUser();
   if (!user || !roles.includes(user.role)) throw new Error("Forbidden");
   return user;
+}
+
+/** True when a session exists (always, in dev mock mode). */
+export async function isSignedIn(): Promise<boolean> {
+  if (DEV_MOCK_AUTH) return true;
+  return !!(await auth()).userId;
+}
+
+/**
+ * Dev mock mode only: the active seeded user for the role chosen in the Dev Role
+ * Switcher (cookie), defaulting to admin. Placeholder `seed_*` accounts are preferred.
+ */
+async function getDevMockUser(): Promise<CurrentUser | null> {
+  if (!DEV_MOCK_AUTH) return null;
+  const chosen = (await cookies()).get(DEV_ROLE_COOKIE)?.value;
+  const role = isDevRole(chosen) ? chosen : "admin";
+  const [user] = await withSystemContext((tx) =>
+    tx
+      .select()
+      .from(users)
+      .where(and(eq(users.role, role), eq(users.isActive, true)))
+      .orderBy(
+        desc(sql`${users.clerkUserId} like 'seed_%'`),
+        asc(users.createdAt),
+      )
+      .limit(1),
+  );
+  return user ?? null;
 }

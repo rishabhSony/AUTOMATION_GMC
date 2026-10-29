@@ -10,7 +10,7 @@ You are the senior full-stack AI engineer developing **QuotePulse GMC**, which t
 
 As of 29 Oct 2026:
 - **Phase 1 (local scaffold): done.** `apps/web` (Next.js 15.5, shadcn/ui) and `services/backend` (FastAPI exposing only `GET /api/v1/health`).
-- **Phase 2 (schema): done.** Migrations `0000`–`0003` are applied to local `quotepulse_dev`, and the seed has run (4 users, 19 sub-limit rows).
+- **Phase 2 (schema): done.** Migrations `0000`–`0004` are applied to local `quotepulse_dev`, and the seed has run (4 users, 19 sub-limit rows).
 - **Phase 3 (Clerk auth): code done, not yet exercised with a real Clerk login.**
   - Working: middleware redirects, `/login`, `/invite/accept`, a placeholder `/dashboard`, the Clerk webhook (tested with signed events), and `lib/auth.ts`.
   - Blocked on: the Clerk keys and `CLERK_WEBHOOK_SIGNING_SECRET` in `.env.local`, plus Clerk Dashboard setup (Restricted / invite-only sign-up mode, a webhook endpoint for `user.*` events).
@@ -38,6 +38,12 @@ As of 29 Oct 2026:
   - Exceptions tab: unmatched sub-limit triage cards, quote fields needing review, and demographic anomalies with resolve/reopen (`?view=open|resolved|all`). Audit tab: append-only log, newest first.
   - Not built: `/cases/new` (create + upload UI), `/cases/[id]/treatments` (the quote grid shows those sections), the SSE pipeline hub, `/onboarding`, the decryption modal, and PDF bounding-box previews (no layout coordinates are stored).
   - Verified by running a copy of the app with Clerk stubbed out against the real API and DB in Playwright: every tab, PIN → Zone, overrides, recalculation, resolutions and export download. No console errors.
+- **Final integration (offline-testable end to end): done** (130 pytest tests).
+  - **Mock modes:** env-toggled mock auth (web + API) and mock AI, so the whole app runs with no Clerk or OpenAI keys. See §5 "Running the app".
+  - **New screens:** `/cases/new` (3-step intake → create, upload, process), the password modal (423 → modal, 422 → shake + attempt counter), `/cases/[id]/pipeline` (polls the 4 stages, then opens the quote review), and `/cases/[id]/treatments` (the 20 BRD §7.1 modern treatments).
+  - **Backend:** `POST /cases/{id}/process`, `GET /cases/{id}/pipeline-status`, intake fields on `POST /cases`, `GET /reference/zone`, and migration `0004_ops_analyst_rls.sql`.
+  - **Verified:** Playwright ran in real mock mode (no harness): intake with a locked census, wrong then right password, live pipeline, auto-redirect, treatments, role switching (ops sees all cases; a Sales RM gets 404 on an unassigned case), and a second case through the heuristic mock-AI path.
+  - **Still not built:** Celery/Redis (`/process` uses BackgroundTasks in the API process), the SSE stream (the screen polls), a standalone `/decrypt` (passwords go with `/process`), `/onboarding`, and PDF bounding-box previews.
 
 Phase 0 is complete: this file is the only agent-context file. Update this section and the Commands section as phases land.
 
@@ -165,6 +171,62 @@ curl -X PATCH localhost:8000/api/v1/cases/$CASE/manual-inputs -H "Authorization:
   -H 'content-type: application/json' -d '{"pincode":"400051","brokerage_pct":"7.50"}'
 ```
 
+### Running the app
+
+Both env files have committed templates: `apps/web/.env.example` → `apps/web/.env.local`, and `services/backend/.env.example` → `services/backend/.env.backend.local`.
+
+**Mock mode (offline, no secrets).** For local dry runs.
+
+| Where | Setting |
+| --- | --- |
+| Web | `NEXT_PUBLIC_ENABLE_DEV_MOCK_AUTH=true` |
+| API | `ENVIRONMENT=development`, `ENABLE_DEV_MOCK_AUTH=true`, `USE_MOCK_AI=true` (or leave `OPENAI_API_KEY` empty) |
+
+```bash
+# Postgres running, migrations + seed applied (bun run db:migrate && bun run seed)
+cd services/backend && .venv/bin/uvicorn app.main:app --reload --port 8000   # logs "DEV MOCK AUTH is ON"
+cd apps/web && bun run dev --port 3000                                        # open http://localhost:3000
+curl localhost:8000/api/v1/health    # {"dev_mock_auth": true, "mock_ai": true, ...}
+```
+
+- **Signing in:** no Clerk. The header's amber **Dev role** switcher picks the seeded user (`seed_admin`, `seed_underwriter`, `seed_sales_rm`, `seed_ops_analyst`) through the `qp_dev_role` cookie. API calls then send `X-Dev-User-Id` / `X-Dev-User-Role`.
+- **RLS still applies:** the API checks the header against the `users` row, and that row's role drives RLS.
+- **Guards:** web mock auth only works under `bun run dev`, never in a production build. The API ignores the headers unless `ENVIRONMENT=development`.
+- **Mock AI:** `samples/rfq_apex.md` returns the pre-baked Pass 1/2 answers. Any other RFQ is read from labelled table rows / `Label: value` lines. `model_version` shows `mock-local`.
+
+**Live mode (real Clerk + OpenAI).**
+- **Web:** `NEXT_PUBLIC_ENABLE_DEV_MOCK_AUTH=false` (or unset), plus the Clerk keys and `CLERK_WEBHOOK_SIGNING_SECRET`.
+- **API:** `ENABLE_DEV_MOCK_AUTH=false`, `USE_MOCK_AI=false`, `CLERK_JWKS_URL` (+ `CLERK_ISSUER`) and `OPENAI_API_KEY`.
+- **Clerk Dashboard:** Restricted / invite-only sign-up, a webhook for `user.*` events to `/api/webhooks/clerk`, and invitations with `publicMetadata.role`.
+
+### Local dry-run checklist (mock mode)
+
+1. **Health.** `curl localhost:8000/api/v1/health` shows `dev_mock_auth` and `mock_ai` true, and the API log shows the DEV MOCK AUTH warning.
+2. **Dashboard.** `/` → `/dashboard` with no login; the header shows the Dev role switcher (Admin).
+3. **Intake details.** **New Quote Case** → Company `Apex Logistics Ltd`, Policy Start Date, Incumbent Insurer `ICICI Lombard General Insurance`, Brokerage `7.5`, PIN `400051`. The Zone hint reads *Review Required* (`zone_master` is empty by design).
+4. **Documents.** Drop `samples/rfq_apex.md` and `samples/apex_census_locked.xlsx`; they're tagged RFQ and census. Continue → Review → **Create case & start processing**.
+5. **Password modal.**
+   - A wrong password shakes the field and shows "Incorrect password (Attempt 1 of 3)".
+   - `Apex@2026` continues to `/cases/[id]/pipeline`.
+6. **Pipeline.** The 4 stages complete. Expect: 1 file decrypted in memory; 443 members, 242 primary, SME Yes, 6 exceptions; fields extracted with `mock-local`; 1 matched and 2 needing review, proposal type Roll Over. The screen then opens Quote Review.
+7. **Quote Review.**
+   - 5 columns; Incumbent Insurer and Policy Tenure are Manual (from intake).
+   - Edit PIN → toast + Zone pulse.
+   - The ↗ evidence drawer works, and so does a pencil override (justification required).
+8. **Modern Treatments.** 20 rows, 13 tagged IRDAI. Unstated rows show "Covered up to Base SI (default · not stated in RFQ)". Override one, then check the Audit Trail.
+9. **Sub-Limits and Exceptions.**
+   - Appendectomy (Rs. 33,000) and Cataract (10% of SI) are unmatched.
+   - Approve one with justification as Admin or Underwriter.
+   - Resolve the orphan-dependant exception.
+10. **Demography.** Toggle the age mode → Recalc → toast with the changed count. Use **Flagged rows only**; the grid stays strictly 7 columns.
+11. **Exports.** **Quote Sheet** and **Demography (7-col)** download; copies land in `storage/outputs/analysis/{case_id}/`, and each export adds a `case_export` audit row.
+12. **Roles.**
+    - Ops Analyst: sees every case (migration 0004) and can resolve exceptions and recalculate, but has no quote overrides or sub-limit approval.
+    - Sales RM: sees only their own cases; an Admin-created case returns "Case not found".
+    - Underwriter: can approve sub-limits.
+13. **Heuristic mock AI.** A second case with `samples/rfq_nimbus.md` + `samples/apex_census.csv` has no password prompt. Robotic Surgeries shows "Upto 50% SI" (Current: Not Covered), and Cataract / Hernia / Appendectomy sub-limits are found.
+14. **Failure path.** Stop the API mid-run, or upload a broken census. The pipeline shows the failed stage and offers **Run again**.
+
 Lint/format tooling: **ESLint + Prettier** (frontend, Next.js 15) and **Ruff** (backend, Python 3.11+). These are project choices, not from `/docs`.
 
 Setup notes:
@@ -207,6 +269,10 @@ Env files (gitignored): `apps/web/.env.local` and `services/backend/.env.backend
   | `PATCH /cases/{id}/sublimits/{proc_name}` | underwriter, admin | `matched_option` (`option_1`–`4`, or `unmatched` to approve the exact amount) + `justification`. |
   | `GET /cases/{id}/export/quote-excel`, `/export/demography-excel` | all | openpyxl workbook archived to `outputs/analysis/{case_id}/`, `case_export` audit row, streamed back. |
   | `GET /cases/{id}/audit` | all | Audit trail, newest first. From TRD §11 (Doc 05 has no audit route); the audit tab needs it. |
+  | `POST /cases/{id}/process` | sales_rm, underwriter, admin | Body `{passwords: {file_id: pw}, basis_mode?}`. Decrypts every census/RFQ in RAM during the request (423 lists locked files, 422 `invalid_password`), drops the passwords, then runs demography → extraction → matching in a background task. 202, or 409 while a run is active. |
+  | `GET /cases/{id}/pipeline-status` | all | 4 stages (`intake`, `demography`, `extraction`, `matching`) with `pending/running/done/skipped/failed`, `terminal`, `can_start`, `error`. Progress is in API process memory (`in_memory_run`); after a restart only the case status is known. |
+  | `GET /reference/zone` | all | `pincode` / `state` / `district` → `{zone, matched_by}` (same lookup as `/manual-inputs`). |
+  | `POST /cases` (intake) | sales_rm, underwriter, admin | Also accepts `proposal_start_date` (→ age basis), `policy_tenure`, `incumbent_insurer` (→ `proposal_type`), `brokerage_pct`, `rater_type`, `pincode`, `state`, `district`. Tenure and insurer become Manual grid rows ("Entered at case intake"); a `case_intake` audit row is written. |
 - Review API decisions:
   - Field and procedure names contain `/` (e.g. `Maternity Expenses / Benefits`), so those routes use `{name:path}`; clients send `encodeURIComponent(name)`.
   - `PATCH /extractions` rejects the manual-input fields (Rater Type, Brokerage %, PIN Code, State, District) and Zone with 422: `/manual-inputs` keeps the `cases` columns, grid rows and Zone in sync.
@@ -215,7 +281,23 @@ Env files (gitignored): `apps/web/.env.local` and `services/backend/.env.backend
   - Recalculate-age regenerates only age-dependent exceptions (`under18_employee`, `age_dob_mismatch`, and `invalid_dob` where a DOB was parsed). Resolved ones are kept and suppress an identical new one. A DOB now after the basis date with no source age keeps its previous age.
   - Quote workbook (`gmc_quote_summary_sheet.xlsx`): sheets Quote Summary (case header + 5-column grid), Hospitalization & Treatments, Procedure Sub-Limits, Underwriter Notes (audit rows with a justification).
   - The browser calls FastAPI directly, so CORS allows `CORS_ALLOWED_ORIGINS` (default `http://localhost:3000`).
-  - RLS limits ops analysts to cases assigned to them (Doc 05 §3 as written), even though the role matrix says "system-wide".
+  - Migration `0004_ops_analyst_rls.sql` (user decision) gives `ops_analyst` the role matrix's "system-wide" scope.
+    - It can read every case plus its files, quote fields, sub-limits and audit trail.
+    - It can update `cases` / `case_files` and fully manage demography records and exceptions.
+    - Endpoint role sets still come from Doc 05 §8.
+- Final integration decisions:
+  - **Pipeline:** with no Redis/Celery locally, `/process` runs in FastAPI `BackgroundTasks`, with stage progress in the process (`app/api/v1/pipeline.py`). It works for one local API process; Celery replaces it on EC2.
+  - **Pipeline end status:** extraction sets `review_required` or `ready_for_quote`; census-only runs end at `review_required`; errors end at `failed`. The user's prompt said `review_ready`, which isn't a `case_status` enum value, so the UI treats any terminal non-failed status as ready.
+  - **Decryption:** passwords are used only during the `/process` request; the background task holds decrypted bytes in RAM, never the password.
+  - **Mock AI:** `app/services/mock_llm.py` duck-types the instructor client.
+    - `samples/rfq_apex.md` gets the baked fixtures (≥ 80% of their citations found); anything else goes through the row scanner, with Pass 2 = supported / Medium.
+    - Output still goes through `assemble_rows` (grounding, defaults, validators).
+    - In development an empty key means mock AI; in production it means 503.
+  - **Mock auth:** `lib/dev-mode.ts` (`DEV_MOCK_AUTH` requires `NODE_ENV !== "production"`). The web side swaps `clerkMiddleware`/`ClerkProvider` out and resolves the user from the role cookie (`lib/auth.ts`); `useApi()` picks Clerk or dev headers at build time. The API trusts `X-Dev-User-Id` only when `ENVIRONMENT=development` and `ENABLE_DEV_MOCK_AUTH=true`.
+  - **Modern Treatments:** the user asked for "12 IRDAI-mandated treatments with IRDAI codes", but the docs define 20 (BRD §7.1) and no IRDAI codes. The tab shows all 20 with a `BRD 7.1-NN` reference and an IRDAI tag on the 13 BRD items that make up IRDAI's 12-item list (items 6 and 7 are one IRDAI item), plus an "IRDAI standardised list only" filter.
+  - **Treatment default:** "Covered up to Base SI" (user-specified) is a display-only default for treatments the RFQ doesn't state. It is never stored.
+  - **Intake fields:** the policy period is a start date (sets `proposal_start_date` and the age basis) plus a tenure. Incumbent insurer derives `proposal_type` with the BRD §6.1 rule. Manual grid rows feed the derived fields on later extractions.
+  - **Samples:** `samples/` holds synthetic dry-run inputs; `apex_census_locked.xlsx` uses the password `Apex@2026`.
 
 - Extraction pipeline (Phase 5):
   - **Registry:** `field_registry.py` is the single source of truth: 95 BRD §6–7 fields, 88 of them sent to the LLM as a strict `Literal`. Names are lightly shortened from the BRD (e.g. modern-treatment titles). An extra `Incumbent Insurer` field exists to drive the BRD proposal-type rule.

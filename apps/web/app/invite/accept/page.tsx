@@ -1,7 +1,9 @@
 import { SignUp } from "@clerk/nextjs";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 
 import { clerkAppearance } from "@/lib/clerk-appearance";
+import { DEV_MOCK_AUTH } from "@/lib/dev-mode";
 
 // Clerk invitation emails link here with a `__clerk_ticket` token. Without a
 // ticket there is nothing to accept, since self-registration is disabled.
@@ -10,6 +12,7 @@ export default async function InviteAcceptPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
+  if (DEV_MOCK_AUTH) redirect("/dashboard"); // no Clerk in dev mock mode
   const { __clerk_ticket: ticket } = await searchParams;
 
   return (
